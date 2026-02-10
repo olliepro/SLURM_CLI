@@ -29,7 +29,7 @@ python -m pip install .
 python -m pip install "git+ssh://git@github.com/olliepro/SLURM_CLI.git"
 ```
 
-*For joining compute/login nodes, ssh config setup is required. See [`docs/REMOTE.md`](docs/REMOTE.md).*
+*For opening a remote editor on a compute/login nodes, ssh config setup is required. See [`docs/REMOTE.md`](docs/REMOTE.md).*
 
 2. Check command discovery:
 
