@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import contextlib
+import io
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from slurm_cli.interactive_slurm import (  # noqa: E402
+    parse_dash_args,
+    parse_launch_args,
+    parse_search_args,
+)
+
+
+class SearchParserTests(unittest.TestCase):
+    def _assert_parse_fails(self, argv: list[str]) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_search_args(argv=argv)
+
+    def test_rejects_zero_max_gpus(self) -> None:
+        self._assert_parse_fails(argv=["--max-gpus", "0"])
+
+    def test_rejects_malformed_time(self) -> None:
+        self._assert_parse_fails(argv=["--max-time", "bad-time"])
+
+    def test_rejects_min_time_greater_than_max_time(self) -> None:
+        self._assert_parse_fails(
+            argv=[
+                "--max-time",
+                "01:00:00",
+                "--min-time",
+                "02:00:00",
+                "--max-gpus",
+                "4",
+                "--min-gpus",
+                "1",
+            ]
+        )
+
+    def test_rejects_min_gpus_greater_than_max_gpus(self) -> None:
+        self._assert_parse_fails(argv=["--max-gpus", "2", "--min-gpus", "4"])
+
+    def test_parses_valid_search_flags(self) -> None:
+        args = parse_search_args(
+            argv=[
+                "--max-time",
+                "04:00:00",
+                "--min-time",
+                "00:30:00",
+                "--max-gpus",
+                "4",
+                "--min-gpus",
+                "1",
+                "--yes",
+            ]
+        )
+        self.assertEqual(args.max_time_minutes, 240)
+        self.assertEqual(args.min_time_minutes, 30)
+        self.assertEqual(args.max_gpus, 4)
+        self.assertEqual(args.min_gpus, 1)
+        self.assertTrue(args.yes)
+
+    def test_parses_dash_without_flags(self) -> None:
+        args = parse_dash_args(argv=[])
+        self.assertEqual(vars(args), {})
+
+    def test_launch_parser_unchanged(self) -> None:
+        args = parse_launch_args(argv=["--shell", "/bin/bash"])
+        self.assertEqual(args.shell, "/bin/bash")
+
+
+if __name__ == "__main__":
+    unittest.main()

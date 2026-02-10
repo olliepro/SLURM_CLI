@@ -1,0 +1,5 @@
+{
+  "include": ["."],
+  "extraPaths": [".."],
+  "typeCheckingMode": "basic"
+}
