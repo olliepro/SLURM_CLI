@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
+from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from slurm_cli.dash_logic import DashJob  # noqa: E402
+from slurm_cli.dash_logic import DashActionResult, DashJob  # noqa: E402
 from slurm_cli.dash_ui import DashBoard  # noqa: E402
 
 
@@ -19,7 +16,7 @@ def _job(job_id: str, state: str) -> DashJob:
         time_left="1:00",
         reason="Priority",
         node_list="c0318" if state == "R" else "",
-        work_dir="/tmp",
+        work_dir="workspace",
     )
 
 
@@ -47,6 +44,19 @@ class DashUiStateTests(unittest.TestCase):
         self.assertFalse(board.can_join_current())
         board.update_jobs(jobs=[_job("1", "R")])
         self.assertTrue(board.can_join_current())
+
+    @patch("slurm_cli.dash_ui.join_job_via_remote")
+    def test_join_uses_shared_remote_call(self, join_mock) -> None:
+        join_mock.return_value = DashActionResult(
+            ok=True,
+            message="ok",
+            affected_job_ids=["1"],
+        )
+        board = DashBoard(user_name="test")
+        board.update_jobs(jobs=[_job("1", "R")])
+        exit_code = board._join_from_ui()
+        self.assertEqual(exit_code, 0)
+        join_mock.assert_called_once_with(job=board.current_job(), editor=None)
 
 
 if __name__ == "__main__":

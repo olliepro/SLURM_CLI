@@ -1,5 +1,4 @@
 {
-  "include": ["."],
-  "extraPaths": [".."],
+  "include": ["src", "tests"],
   "typeCheckingMode": "basic"
 }

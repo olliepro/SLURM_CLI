@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import slurm_cli.config_store as config_store  # noqa: E402
 

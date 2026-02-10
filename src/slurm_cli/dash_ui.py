@@ -57,14 +57,21 @@ class DashBoard:
     Args:
         user_name: Username used for `squeue -u` filtering.
         refresh_seconds: Automatic refresh interval.
+        editor_command: Optional editor command/alias for `v` join actions.
 
     Returns:
         Process exit code: 0 on normal quit/join success, 2 on recoverable failures.
     """
 
-    def __init__(self, user_name: str, refresh_seconds: int = 2):
+    def __init__(
+        self,
+        user_name: str,
+        refresh_seconds: int = 2,
+        editor_command: Optional[str] = None,
+    ):
         self.user_name = user_name
         self.refresh_seconds = max(1, refresh_seconds)
+        self.editor_command = editor_command
         self.jobs: List[DashJob] = []
         self.focus_index = 0
         self.selected_job_ids: Set[str] = set()
@@ -323,7 +330,7 @@ class DashBoard:
         if job is None:
             self.status_message = "No focused job."
             return None
-        result = join_job_via_remote(job=job)
+        result = join_job_via_remote(job=job, editor=self.editor_command)
         self.status_message = result.summary_line()
         return 0 if result.ok else None
 
@@ -804,24 +811,14 @@ class DashBoard:
         self._refresh_jobs()
 
 
-def run_dash_dashboard(user_name: str) -> int:
+def run_dash_dashboard(user_name: str, editor_command: Optional[str] = None) -> int:
     """Run the dash dashboard for one user and return an exit code."""
 
-    return DashBoard(user_name=user_name, refresh_seconds=2).run()
+    return DashBoard(user_name=user_name, refresh_seconds=2, editor_command=editor_command).run()
 
 
 def _safe_add(stdscr: "curses.window", y: int, x: int, text: str, attr: int = 0) -> None:
-    """Write clipped text safely within curses screen bounds.
-
-    Inputs:
-    - `stdscr`: destination curses screen.
-    - `y`/`x`: target row and column.
-    - `text`: text payload to render.
-    - `attr`: curses attribute bitmask.
-
-    Outputs:
-    - None. Draws text when visible and ignores off-screen writes.
-    """
+    """Write clipped text safely within curses screen bounds."""
 
     height, width = stdscr.getmaxyx()
     if y < 0 or y >= height or x >= width:
@@ -838,18 +835,7 @@ def _safe_add(stdscr: "curses.window", y: int, x: int, text: str, attr: int = 0)
 def _panel_add(
     stdscr: "curses.window", y: int, x: int, text: str, left: int, right: int, attr: int = 0
 ) -> None:
-    """Write text clipped to one horizontal panel range.
-
-    Inputs:
-    - `stdscr`: destination curses screen.
-    - `y`/`x`: desired row and column.
-    - `text`: text payload to render.
-    - `left`/`right`: inclusive horizontal panel bounds.
-    - `attr`: curses text attributes.
-
-    Outputs:
-    - None. Draws within panel bounds only.
-    """
+    """Write text clipped to one horizontal panel range."""
 
     if right < left or x > right:
         return

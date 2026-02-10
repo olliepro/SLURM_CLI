@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from slurm_cli.search_logic import (  # noqa: E402
     SearchBounds,

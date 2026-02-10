@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from slurm_cli.remote_access import (
+    RemoteOpenRequest,
+    open_remote_target,
+)
 
 DASH_RUNNING = "R"
 DASH_PENDING = "PD"
@@ -30,7 +33,7 @@ class DashJob:
         Immutable typed job record with canonical display helpers.
 
     Example:
-        >>> DashJob('1', 'R', 'demo', '0:01', '0:59', 'None', 'c001', '/tmp').is_running()
+        >>> DashJob('1', 'R', 'demo', '0:01', '0:59', 'None', 'c001', 'workdir').is_running()
         True
     """
 
@@ -151,18 +154,22 @@ def resolve_primary_host(node_list: str) -> Optional[str]:
     return _expand_first_host(node_list=normalized)
 
 
-def join_job_via_remote(job: DashJob) -> DashActionResult:
-    """Open VS Code remote through zsh `remote()` for a running job.
+def join_job_via_remote(
+    job: DashJob,
+    editor: Optional[str] = None,
+) -> DashActionResult:
+    """Open remote editor for a running dashboard job.
 
     Args:
         job: Running dashboard job to join.
+        editor: Optional editor command or alias override.
 
     Returns:
         Success/failure result describing the join attempt.
 
     Example:
-        >>> job = DashJob('1', 'R', 'demo', '0:01', '0:59', '', 'c001', '/tmp')
-        >>> join_job_via_remote(job=job)  # doctest: +SKIP
+        >>> job = DashJob('1', 'R', 'demo', '0:01', '0:59', '', 'c001', 'workdir')
+        >>> join_job_via_remote(job=job, editor='cursor')  # doctest: +SKIP
         DashActionResult(ok=True, ...)
     """
 
@@ -171,16 +178,14 @@ def join_job_via_remote(job: DashJob) -> DashActionResult:
     host = resolve_primary_host(node_list=job.node_list)
     if not host:
         return DashActionResult(False, "Unable to resolve job host", [job.job_id])
-    cwd = _join_cwd(work_dir=job.work_dir)
-    cmd = ["zsh", "-ic", f"remote {shlex.quote(host)}"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd))
-    except FileNotFoundError:
-        return DashActionResult(False, "zsh not found on PATH", [job.job_id])
-    except OSError as exc:
-        return DashActionResult(False, f"join failed: {exc}", [job.job_id])
-    message = "Opened VS Code remote" if proc.returncode == 0 else _result_message(proc=proc)
-    return DashActionResult(proc.returncode == 0, message, [job.job_id])
+    result = open_remote_target(
+        request=RemoteOpenRequest(
+            host=host,
+            work_dir=_join_cwd(work_dir=job.work_dir),
+            editor=editor,
+        )
+    )
+    return DashActionResult(ok=result.ok, message=result.message, affected_job_ids=[job.job_id])
 
 
 def _squeue_output(user_name: str) -> str:

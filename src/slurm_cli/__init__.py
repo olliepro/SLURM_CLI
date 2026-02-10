@@ -1,0 +1,1 @@
+"""SLURM CLI package."""

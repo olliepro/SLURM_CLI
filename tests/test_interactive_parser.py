@@ -2,11 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from slurm_cli.interactive_slurm import (  # noqa: E402
     parse_dash_args,
@@ -66,11 +62,21 @@ class SearchParserTests(unittest.TestCase):
 
     def test_parses_dash_without_flags(self) -> None:
         args = parse_dash_args(argv=[])
-        self.assertEqual(vars(args), {})
+        self.assertEqual(args.user, None)
+        self.assertEqual(args.editor, None)
+        self.assertFalse(hasattr(args, "remote_mode"))
+
+    def test_parses_dash_with_user_flag(self) -> None:
+        args = parse_dash_args(argv=["--user", "alice"])
+        self.assertEqual(args.user, "alice")
+
+    def test_parses_dash_with_editor_flag(self) -> None:
+        args = parse_dash_args(argv=["--editor", "cursor"])
+        self.assertEqual(args.editor, "cursor")
 
     def test_launch_parser_unchanged(self) -> None:
-        args = parse_launch_args(argv=["--shell", "/bin/bash"])
-        self.assertEqual(args.shell, "/bin/bash")
+        args = parse_launch_args(argv=["--shell", "bash"])
+        self.assertEqual(args.shell, "bash")
 
 
 if __name__ == "__main__":

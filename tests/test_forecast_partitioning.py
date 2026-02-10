@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from datetime import datetime
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from slurm_cli.plot_gpu_usage_forecast import (  # noqa: E402
+from slurm_cli.forecast_core import (  # noqa: E402
     JobRecord,
     NodeCapacity,
     parse_partition_names,

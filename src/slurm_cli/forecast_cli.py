@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Sequence
 
-from plot_gpu_usage_forecast import (
+from slurm_cli.forecast_core import (
     ForecastStats,
     NodeCapacity,
     available_series,

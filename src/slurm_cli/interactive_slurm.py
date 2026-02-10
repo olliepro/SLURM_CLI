@@ -8,12 +8,6 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Sequence
-from pathlib import Path
-
-if __package__ in (None, ""):
-    repo_root = Path(__file__).resolve().parent.parent
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
 
 from slurm_cli.config_store import Config, find_account_entry, record_account_use
 from slurm_cli.constants import (
@@ -99,6 +93,7 @@ class SearchSelection:
 
 def build_launch_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        prog="gpu launch",
         description="Simple Slurm interactive job launcher",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -153,7 +148,7 @@ def build_search_parser() -> argparse.ArgumentParser:
     """Create the parser for the `search` subcommand flags."""
 
     parser = argparse.ArgumentParser(
-        prog="interactive_slurm.py search",
+        prog="gpu search",
         description="Submit parallel two-phase halving search probes",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -224,11 +219,21 @@ def parse_search_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespac
 def build_dash_parser() -> argparse.ArgumentParser:
     """Create parser for the `dash` subcommand."""
 
-    return argparse.ArgumentParser(
-        prog="interactive_slurm.py dash",
+    parser = argparse.ArgumentParser(
+        prog="gpu dash",
         description="Interactive dashboard for pending/running jobs",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument(
+        "--user",
+        help="User to filter in squeue (defaults to USER env var)",
+    )
+    parser.add_argument(
+        "--editor",
+        default=None,
+        help="Editor CLI command or alias for join action (code/cursor/codium/antigravity)",
+    )
+    return parser
 
 
 def parse_dash_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -950,40 +955,17 @@ def run_search_command(args: argparse.Namespace) -> None:
 
 
 def run_dash_command(args: argparse.Namespace) -> None:
-    _ = args
-    user_name = safe_cli_text(os.environ.get("USER"))
+    user_name = safe_cli_text(args.user) if args.user is not None else None
+    if args.user is not None and user_name is None and args.user.strip():
+        fail("--user must contain printable characters.")
+    editor_command = safe_cli_text(args.editor) if args.editor is not None else None
+    if args.editor is not None and editor_command is None and args.editor.strip():
+        fail("--editor must contain printable characters.")
+    if user_name is None:
+        user_name = safe_cli_text(os.environ.get("USER"))
     if not user_name:
         print("ERROR: USER is not set.")
         sys.exit(2)
-    exit_code = run_dash_dashboard(user_name=user_name)
+    exit_code = run_dash_dashboard(user_name=user_name, editor_command=editor_command)
     if exit_code != 0:
         sys.exit(exit_code)
-
-
-def _is_dash_invocation(argv: Sequence[str]) -> bool:
-    return bool(argv) and argv[0] == "dash"
-
-
-def _is_search_invocation(argv: Sequence[str]) -> bool:
-    return bool(argv) and argv[0] == "search"
-
-
-def main() -> None:
-    argv = sys.argv[1:]
-    if _is_dash_invocation(argv=argv):
-        dash_args = parse_dash_args(argv=argv[1:])
-        run_dash_command(args=dash_args)
-        return
-    if _is_search_invocation(argv=argv):
-        search_args = parse_search_args(argv=argv[1:])
-        run_search_command(args=search_args)
-        return
-    launch_args = parse_launch_args(argv=argv)
-    run_launch_command(args=launch_args)
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        cancel()

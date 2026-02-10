@@ -36,7 +36,7 @@ def build_srun(
 
     Example:
         >>> build_srun(gpus=1, cpus=4, time_str="00:30:00", account="P123",
-        ...           shell="/bin/bash", mem="16G")[:4]
+        ...           shell="bash", mem="16G")[:4]
         ['srun', '--gres=gpu:1', '--cpus-per-task=4', '--time=00:30:00']
     """
 

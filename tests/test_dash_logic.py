@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from slurm_cli.dash_logic import (  # noqa: E402
     DASH_PENDING,
@@ -17,6 +13,7 @@ from slurm_cli.dash_logic import (  # noqa: E402
     join_job_via_remote,
     resolve_primary_host,
 )
+from slurm_cli.remote_access import RemoteOpenResult
 
 
 class DashLogicTests(unittest.TestCase):
@@ -57,15 +54,14 @@ class DashLogicTests(unittest.TestCase):
             text=True,
         )
 
+    @patch("slurm_cli.dash_logic.open_remote_target")
     @patch("slurm_cli.dash_logic.resolve_primary_host")
-    @patch("slurm_cli.dash_logic.subprocess.run")
-    def test_join_job_via_remote_calls_zsh_remote(self, run_mock, host_mock) -> None:
+    def test_join_job_via_remote_calls_shared_remote_api(self, host_mock, remote_mock) -> None:
         host_mock.return_value = "c0318"
-        run_mock.return_value = subprocess.CompletedProcess(
-            args=["zsh"],
-            returncode=0,
-            stdout="",
-            stderr="",
+        remote_mock.return_value = RemoteOpenResult(
+            ok=True,
+            message="Opened VS Code remote",
+            command=["code", "--new-window", "--folder-uri", "uri"],
         )
         job = DashJob(
             job_id="123",
@@ -75,19 +71,17 @@ class DashLogicTests(unittest.TestCase):
             time_left="0:50",
             reason="None",
             node_list="c0318",
-            work_dir="/tmp",
+            work_dir="workspace",
         )
-        result = join_job_via_remote(job=job)
+        result = join_job_via_remote(job=job, editor="cursor")
         self.assertTrue(result.ok)
-        run_mock.assert_called_once_with(
-            ["zsh", "-ic", "remote c0318"],
-            capture_output=True,
-            text=True,
-            cwd="/tmp",
-        )
+        remote_mock.assert_called_once()
+        call_request = remote_mock.call_args.kwargs["request"]
+        self.assertEqual(call_request.host, "c0318")
+        self.assertEqual(call_request.editor, "cursor")
 
-    @patch("slurm_cli.dash_logic.subprocess.run")
-    def test_join_rejects_pending_job(self, run_mock) -> None:
+    @patch("slurm_cli.dash_logic.open_remote_target")
+    def test_join_rejects_pending_job(self, remote_mock) -> None:
         job = DashJob(
             job_id="124",
             state_compact="PD",
@@ -100,7 +94,7 @@ class DashLogicTests(unittest.TestCase):
         )
         result = join_job_via_remote(job=job)
         self.assertFalse(result.ok)
-        run_mock.assert_not_called()
+        remote_mock.assert_not_called()
 
 
 if __name__ == "__main__":

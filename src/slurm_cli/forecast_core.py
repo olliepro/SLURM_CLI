@@ -1,33 +1,30 @@
-#!/usr/bin/env python3
-"""Forecast cluster-wide GPU availability over time from current Slurm jobs.
+"""Core forecast computation for cluster-wide GPU availability.
 
 Inputs:
 - Live job metadata from `scontrol show jobs -o`.
 - Live node metadata from `scontrol show nodes -o`.
-- Optional horizon and output path flags.
 
 Outputs:
-- A PNG timeseries plot of projected GPU availability.
+- Parsed records and forecast series for terminal dashboards/CLIs.
 
 Example:
-    python plot_gpu_usage_forecast.py \
-      --output gpu_usage_forecast_timeseries.png
+    >>> raw_jobs = run_command(command=["scontrol", "show", "jobs", "-o"])  # doctest: +SKIP
+    >>> raw_nodes = run_command(command=["scontrol", "show", "nodes", "-o"])  # doctest: +SKIP
+    >>> capacities = parse_node_capacities(raw_nodes=raw_nodes)  # doctest: +SKIP
+    >>> windows, stats = collect_job_windows(  # doctest: +SKIP
+    ...     raw_jobs=raw_jobs,
+    ...     now=datetime.now(),
+    ...     node_capacities=capacities,
+    ... )
 """
 
 from __future__ import annotations
 
-import argparse
 import re
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import cast
-
-import matplotlib.pyplot as plt
-from matplotlib.axes import Axes
-from matplotlib.figure import Figure
 
 ACTIVE_STATES = {"RUNNING", "PENDING"}
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
@@ -162,32 +159,6 @@ class ForecastStats:
             f"degenerate_jobs={self.degenerate_jobs}, extra_gpu_reserved={self.degenerate_extra_gpus}, "
             f"degenerate_nodes={self.degenerate_nodes}, node_locked_gpus={self.degenerate_locked_gpus}"
         )
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for output control and optional horizon cap.
-
-    Inputs:
-    - Command line flags.
-
-    Outputs:
-    - Namespace with `output` and optional `horizon_hours`.
-    """
-
-    parser = argparse.ArgumentParser(description="Plot projected GPU availability from Slurm queue state.")
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("gpu_usage_forecast_timeseries.png"),
-        help="Output PNG path.",
-    )
-    parser.add_argument(
-        "--horizon-hours",
-        type=float,
-        default=None,
-        help="Optional forecast horizon in hours from now.",
-    )
-    return parser.parse_args()
 
 
 def run_command(command: list[str]) -> str:
@@ -800,79 +771,3 @@ def available_series(usage: list[int], capacity: int) -> list[int]:
     """Convert usage values into non-negative available GPU values."""
 
     return [max(capacity - used_gpus, 0) for used_gpus in usage]
-
-
-def plot_forecast(
-    times: list[datetime],
-    usage: list[int],
-    capacity: int,
-    stats: ForecastStats,
-    output_path: Path,
-    now: datetime,
-) -> None:
-    """Render and save a projected GPU availability timeseries.
-
-    Inputs:
-    - `times`/`usage`: stepwise projected GPU usage points (degenerate-corrected).
-    - `capacity`: total cluster GPU capacity.
-    - `stats`: forecast coverage counters.
-    - `output_path`: destination PNG file.
-    - `now`: generation timestamp.
-
-    Outputs:
-    - Writes a PNG file.
-
-    Example:
-    - `plot_forecast(times, usage, capacity, stats, Path("out.png"), datetime.now())`
-    """
-
-    available = available_series(usage=usage, capacity=capacity)
-    figure: Figure = plt.figure(figsize=(12, 6))
-    axis = cast(Axes, figure.add_subplot(1, 1, 1))
-    axis.plot(
-        times,
-        available,
-        color="#2ca02c",
-        linewidth=2.2,
-        drawstyle="steps-post",
-        label="Projected GPUs available (degenerate-corrected)",
-    )
-    axis.fill_between(times, available, step="post", alpha=0.20, color="#2ca02c")
-    horizon = times[-1]
-    tick_times, tick_labels = build_relative_halfhour_ticks(now=now, horizon=horizon)
-    axis.set_xlim(now, horizon)
-    plt.sca(axis)
-    plt.xticks(tick_times, tick_labels, rotation=45, ha="right")
-    axis.set_ylabel("GPUs available")
-    axis.set_xlabel("Time from now")
-    axis.set_title("Projected Cluster GPU Availability (Node-Blocking Corrected)")
-    axis.grid(True, alpha=0.28, linewidth=0.8)
-    axis.legend(loc="upper left")
-    figure.text(0.01, 0.01, f"Generated: {now:%Y-%m-%d %H:%M:%S}", fontsize=9)
-    figure.text(0.01, 0.04, stats.subtitle(), fontsize=9)
-    figure.tight_layout(rect=(0, 0.06, 1, 1))
-    figure.savefig(output_path, dpi=220)
-    plt.close(figure)
-
-
-def main() -> None:
-    """Generate and save a queue-based GPU usage forecast plot."""
-
-    args = parse_args()
-    now = datetime.now()
-    raw_jobs = run_command(command=["scontrol", "show", "jobs", "-o"])
-    raw_nodes = run_command(command=["scontrol", "show", "nodes", "-o"])
-    node_capacities = parse_node_capacities(raw_nodes=raw_nodes)
-    windows, stats = collect_job_windows(raw_jobs=raw_jobs, now=now, node_capacities=node_capacities)
-    capacity = total_gpu_capacity(node_capacities=node_capacities)
-    baseline, events = build_event_deltas(windows=windows, now=now)
-    grouped_events = group_event_deltas(events=events)
-    horizon = choose_horizon(windows=windows, now=now, horizon_hours=args.horizon_hours)
-    times, usage = build_step_series(now=now, baseline=baseline, grouped_events=grouped_events, horizon=horizon)
-    plot_forecast(times=times, usage=usage, capacity=capacity, stats=stats, output_path=args.output, now=now)
-    print(f"Wrote {args.output} with {len(windows)} forecast windows.")
-    print(stats.subtitle())
-
-
-if __name__ == "__main__":
-    main()
