@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from slurm_cli.dash_logic import DashActionResult, DashJob  # noqa: E402
 from slurm_cli.dash_ui import DashBoard  # noqa: E402
+from slurm_cli.forecast_cli import ForecastPoint, ForecastSnapshot  # noqa: E402
+from slurm_cli.forecast_core import ForecastStats  # noqa: E402
 
 
 def _job(job_id: str, state: str) -> DashJob:
@@ -17,6 +20,34 @@ def _job(job_id: str, state: str) -> DashJob:
         reason="Priority",
         node_list="c0318" if state == "R" else "",
         work_dir="workspace",
+    )
+
+
+def _stats() -> ForecastStats:
+    return ForecastStats(
+        active_gpu_jobs=0,
+        running_gpu_jobs=0,
+        pending_gpu_jobs=0,
+        pending_with_start=0,
+        pending_without_start=0,
+        forecast_windows=0,
+        degenerate_jobs=0,
+        degenerate_extra_gpus=0,
+        degenerate_nodes=0,
+        degenerate_locked_gpus=0,
+    )
+
+
+def _snapshot(available: int, capacity: int, max_colocated: int) -> ForecastSnapshot:
+    now = datetime(2026, 2, 11, 9, 0, 0)
+    return ForecastSnapshot(
+        generated_at=now,
+        capacity=capacity,
+        max_colocated_available_gpus=max_colocated,
+        points=[ForecastPoint(offset_hours=0.0, available_gpus=available)],
+        series_times=[now],
+        series_available=[available],
+        stats=_stats(),
     )
 
 
@@ -57,6 +88,17 @@ class DashUiStateTests(unittest.TestCase):
         exit_code = board._join_from_ui()
         self.assertEqual(exit_code, 0)
         join_mock.assert_called_once_with(job=board.current_job(), editor=None)
+
+    def test_title_includes_availability_and_max_colocated(self) -> None:
+        board = DashBoard(user_name="test")
+        title = board._title_with_availability(
+            title="GPU Availability Forecast (8h, all GPUs)",
+            snapshot=_snapshot(available=42, capacity=80, max_colocated=8),
+        )
+        self.assertEqual(
+            title,
+            "GPU Availability Forecast (8h, all GPUs) [42/80, max colocated=8]",
+        )
 
 
 if __name__ == "__main__":

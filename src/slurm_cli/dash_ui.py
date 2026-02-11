@@ -535,12 +535,12 @@ class DashBoard:
         - `snapshot`: forecast snapshot for this panel, if computed.
 
         Outputs:
-        - Title string optionally suffixed with `avail/total`.
+        - Title string optionally suffixed with snapshot title metrics.
         """
 
         if snapshot is None:
             return title
-        return f"{title} [{snapshot.availability_fraction()}]"
+        return f"{title} [{snapshot.title_metrics()}]"
 
     def _draw_forecast_placeholder(
         self, stdscr: "curses.window", top: int, left: int, right: int, state: ForecastRenderState

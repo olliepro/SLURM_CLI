@@ -725,6 +725,46 @@ def total_gpu_capacity(node_capacities: dict[str, NodeCapacity]) -> int:
     return sum(capacity.gpus for capacity in node_capacities.values())
 
 
+def node_available_gpus(capacity: NodeCapacity) -> int:
+    """Return non-negative currently available GPUs for one node.
+
+    Inputs:
+    - `capacity`: parsed node capacity and allocation values.
+
+    Outputs:
+    - Integer available GPUs on that node at snapshot time.
+    """
+
+    return max(capacity.gpus - capacity.gpu_alloc, 0)
+
+
+def max_colocated_available_gpus(
+    node_capacities: dict[str, NodeCapacity],
+    partition_name: str | None = None,
+) -> int:
+    """Return the largest currently available GPU count on a single node.
+
+    Inputs:
+    - `node_capacities`: full cluster node-capacity mapping.
+    - `partition_name`: optional partition filter.
+
+    Outputs:
+    - Max currently available GPUs on any one node in the selected scope.
+
+    Example:
+    - `max_colocated_available_gpus(node_capacities=nodes, partition_name="quad")`
+    """
+
+    scoped_capacities = (
+        partition_node_capacities(node_capacities=node_capacities, partition_name=partition_name)
+        if partition_name is not None
+        else node_capacities
+    )
+    if not scoped_capacities:
+        return 0
+    return max(node_available_gpus(capacity=capacity) for capacity in scoped_capacities.values())
+
+
 def partition_gpu_capacity(node_capacities: dict[str, NodeCapacity], partition_name: str) -> int:
     """Return total GPU capacity hosted by one partition.
 

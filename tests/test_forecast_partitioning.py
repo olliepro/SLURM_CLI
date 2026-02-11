@@ -6,6 +6,7 @@ from datetime import datetime
 from slurm_cli.forecast_core import (  # noqa: E402
     JobRecord,
     NodeCapacity,
+    max_colocated_available_gpus,
     parse_partition_names,
     partition_node_capacities,
     record_targets_partition,
@@ -36,15 +37,20 @@ def _record(
     )
 
 
-def _capacity(node_name: str, partitions: tuple[str, ...]) -> NodeCapacity:
+def _capacity(
+    node_name: str,
+    partitions: tuple[str, ...],
+    gpus: int = 4,
+    gpu_alloc: int = 0,
+) -> NodeCapacity:
     return NodeCapacity(
         node_name=node_name,
         cpu=64,
         mem_mib=512000,
-        gpus=4,
+        gpus=gpus,
         cpu_alloc=0,
         mem_alloc_mib=0,
-        gpu_alloc=0,
+        gpu_alloc=gpu_alloc,
         partition_names=partitions,
     )
 
@@ -93,6 +99,26 @@ class ForecastPartitioningTests(unittest.TestCase):
             infer_quad_large_gpu=False,
         )
         self.assertTrue(included)
+
+    def test_max_colocated_available_gpus_uses_single_node_peak(self) -> None:
+        nodes = {
+            "node-a": _capacity(node_name="node-a", partitions=("gpu",), gpus=8, gpu_alloc=2),
+            "node-b": _capacity(node_name="node-b", partitions=("gpu",), gpus=4, gpu_alloc=3),
+        }
+        self.assertEqual(
+            max_colocated_available_gpus(node_capacities=nodes),
+            6,
+        )
+
+    def test_max_colocated_available_gpus_respects_partition_filter(self) -> None:
+        nodes = {
+            "node-a": _capacity(node_name="node-a", partitions=("gpu",), gpus=8, gpu_alloc=1),
+            "node-b": _capacity(node_name="node-b", partitions=("quad",), gpus=4, gpu_alloc=1),
+        }
+        self.assertEqual(
+            max_colocated_available_gpus(node_capacities=nodes, partition_name="quad"),
+            3,
+        )
 
 
 if __name__ == "__main__":

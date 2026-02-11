@@ -29,6 +29,7 @@ from slurm_cli.forecast_core import (
     build_step_series,
     collect_job_windows,
     group_event_deltas,
+    max_colocated_available_gpus,
     partition_gpu_capacity,
     parse_node_capacities,
     run_command,
@@ -69,7 +70,8 @@ class ForecastSnapshot:
     """Snapshot payload for one dashboard refresh cycle.
 
     Inputs:
-    - Generation timestamp, capacity, sampled points, full step-series, and forecast stats.
+    - Generation timestamp, aggregate capacity, max colocated available GPUs on one node,
+      sampled points, full step-series, and forecast stats.
 
     Outputs:
     - Immutable snapshot object with display helpers.
@@ -77,6 +79,7 @@ class ForecastSnapshot:
 
     generated_at: datetime
     capacity: int
+    max_colocated_available_gpus: int
     points: list[ForecastPoint]
     series_times: list[datetime]
     series_available: list[int]
@@ -103,6 +106,11 @@ class ForecastSnapshot:
         """Return canonical current availability text as `avail/total`."""
 
         return f"{self.current_available()}/{self.capacity}"
+
+    def title_metrics(self) -> str:
+        """Return canonical title metric text for dashboard chart headers."""
+
+        return f"{self.availability_fraction()}, max colocated={self.max_colocated_available_gpus}"
 
 
 @dataclass(frozen=True)
@@ -214,7 +222,13 @@ def build_forecast_series(
 
 
 def snapshot_from_series(
-    now: datetime, horizon_hours: float, times: list[datetime], available: list[int], capacity: int, stats: ForecastStats
+    now: datetime,
+    horizon_hours: float,
+    times: list[datetime],
+    available: list[int],
+    capacity: int,
+    max_colocated_available_gpus: int,
+    stats: ForecastStats,
 ) -> ForecastSnapshot:
     """Build sampled `ForecastSnapshot` from full step-series arrays."""
 
@@ -228,6 +242,7 @@ def snapshot_from_series(
     return ForecastSnapshot(
         generated_at=now,
         capacity=capacity,
+        max_colocated_available_gpus=max_colocated_available_gpus,
         points=points,
         series_times=times,
         series_available=available,
@@ -253,12 +268,17 @@ def build_snapshot(
         target_partition=target_partition,
         infer_quad_large_gpu=infer_quad_large_gpu,
     )
+    max_available_colocated = max_colocated_available_gpus(
+        node_capacities=node_capacities,
+        partition_name=target_partition,
+    )
     return snapshot_from_series(
         now=now,
         horizon_hours=horizon_hours,
         times=times,
         available=available,
         capacity=capacity,
+        max_colocated_available_gpus=max_available_colocated,
         stats=stats,
     )
 
