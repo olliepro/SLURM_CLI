@@ -13,6 +13,7 @@ from slurm_cli.remote_access import (
 DASH_RUNNING = "R"
 DASH_PENDING = "PD"
 DASH_SQUEUE_FORMAT = "%i\t%t\t%j\t%M\t%L\t%R\t%N\t%Z"
+BLAME_SQUEUE_FORMAT = "%u|%a|%b|%D|%l|%t"
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,50 @@ class DashActionResult:
         state = "OK" if self.ok else "ERROR"
         targets = ",".join(self.affected_job_ids) or "-"
         return f"{state}: {self.message} ({targets})"
+
+
+@dataclass(frozen=True)
+class BlameRecord:
+    """Aggregated GPU usage stats for one user.
+
+    Args:
+        username: Unix username.
+        account: Slurm account/project.
+        running_gpus: Total GPUs currently running.
+        pending_gpus: Total GPUs waiting in queue.
+        avg_request_minutes: Average time limit of running jobs.
+    """
+
+    username: str
+    account: str
+    running_gpus: int
+    pending_gpus: int
+    avg_request_minutes: float
+    full_name: str
+    coordinator_name: str
+
+
+def fetch_blame_records() -> List[BlameRecord]:
+    """Fetch usage stats for all users with active GPU jobs.
+
+    Returns:
+        List of records sorted by gpu_count descending.
+    """
+
+    cmd = [
+        "squeue",
+        "-h",
+        "-t",
+        "R,PD",
+        "-o",
+        BLAME_SQUEUE_FORMAT,
+    ]
+    try:
+        output = subprocess.check_output(cmd, text=True)
+    except subprocess.CalledProcessError:
+        return []
+
+    return _parse_blame_output(output)
 
 
 def fetch_dash_jobs(user_name: str) -> List[DashJob]:
@@ -185,7 +230,9 @@ def join_job_via_remote(
             editor=editor,
         )
     )
-    return DashActionResult(ok=result.ok, message=result.message, affected_job_ids=[job.job_id])
+    return DashActionResult(
+        ok=result.ok, message=result.message, affected_job_ids=[job.job_id]
+    )
 
 
 def _squeue_output(user_name: str) -> str:
@@ -273,3 +320,193 @@ def _result_message(proc: subprocess.CompletedProcess[str]) -> str:
     if proc.returncode == 0:
         return "Command succeeded"
     return f"Command failed with code {proc.returncode}"
+
+
+def _parse_blame_output(output: str) -> List[BlameRecord]:
+    # store: username -> dict of accumulated stats
+    stats: dict[str, dict[str, Any]] = {}
+
+    for line in output.splitlines():
+        parts = line.split("|")
+        if len(parts) < 6:
+            continue
+        user, account, gres, nodes_str, time_str, state = parts
+        user = user.strip()
+        state = state.strip()
+        if not user:
+            continue
+
+        # Parse GPUs
+        gpus_per_node = _parse_gres_gpu_count(gres)
+        if gpus_per_node == 0:
+            continue
+
+        try:
+            nodes = int(nodes_str)
+        except ValueError:
+            nodes = 1
+
+        total_job_gpus = gpus_per_node * nodes
+
+        # Parse Time Limit
+        minutes = _parse_slurm_duration(time_str)
+
+        entry = stats.setdefault(
+            user,
+            {
+                "account": account.strip(),
+                "running_gpus": 0,
+                "pending_gpus": 0,
+                "total_req_minutes_run": 0.0,
+                "run_count": 0,
+            },
+        )
+
+        if state == DASH_RUNNING:
+            entry["running_gpus"] += total_job_gpus
+            entry["total_req_minutes_run"] += minutes
+            entry["run_count"] += 1
+        elif state == DASH_PENDING:
+            entry["pending_gpus"] += total_job_gpus
+            # Include pending jobs in the requested average
+            entry["total_req_minutes_run"] += minutes
+            entry["run_count"] += 1
+
+    # Collect unique accounts
+    # Collect unique accounts
+    unique_accounts = {data["account"] for data in stats.values()}
+    coordinators = _resolve_account_coordinators(unique_accounts)
+
+    records = []
+    for user, data in stats.items():
+        count = data["run_count"]
+        avg = data["total_req_minutes_run"] / count if count > 0 else 0.0
+
+        acc = data["account"]
+        coord_name = coordinators.get(acc, "")
+
+        records.append(
+            BlameRecord(
+                username=user,
+                account=acc,
+                running_gpus=data["running_gpus"],
+                pending_gpus=data["pending_gpus"],
+                avg_request_minutes=avg,
+                full_name=_resolve_full_name(user),
+                coordinator_name=coord_name,
+            )
+        )
+
+    # Sort by Running GPUs descending
+    return sorted(
+        records,
+        key=lambda r: (r.running_gpus, r.pending_gpus, r.avg_request_minutes),
+        reverse=True,
+    )
+
+
+def _resolve_full_name(username: str) -> str:
+    try:
+        cmd = ["getent", "passwd", username]
+        out = subprocess.check_output(cmd, text=True).strip()
+        parts = out.split(":")
+        if len(parts) >= 5:
+            # GECOS field: Full Name,Room Number,Work Phone,Home Phone
+            return parts[4].split(",")[0]
+    except (subprocess.CalledProcessError, IndexError, FileNotFoundError):
+        pass
+    return ""
+
+
+def _resolve_account_coordinators(accounts: set[str]) -> dict[str, str]:
+    """Return map of account -> coordinator full name."""
+    if not accounts:
+        return {}
+
+    # We can batch query if supported, but let's do a single sacctmgr call with commas
+    acct_list = ",".join(sorted(accounts))
+    # format=Account,Coordinators returns Account|Coordinators|
+    cmd = [
+        "sacctmgr",
+        "show",
+        "account",
+        acct_list,
+        "withcoordinator",
+        "format=Account,Coordinators",
+        "-n",
+        "-p",
+    ]
+
+    mapping = {}
+
+    try:
+        out = subprocess.check_output(cmd, text=True)
+        for line in out.splitlines():
+            parts = line.split("|")
+            if len(parts) >= 2:
+                acc_name = parts[0]
+                coords = parts[1]  # comma separated usernames
+                if coords:
+                    # Pick first coordinator
+                    first_coord = coords.split(",")[0].strip()
+                    if first_coord:
+                        mapping[acc_name] = _resolve_full_name(first_coord)
+    except Exception:
+        pass
+
+    return mapping
+
+
+def _parse_gres_gpu_count(gres: str) -> int:
+
+    # Handle "gpu:2", "gpu:a100:4", "gpu:2(S_static)"
+    # We want the number after the last colon that is digital
+    # but gres format is type:name:count or type:count
+    # examples: gpu:2, gpu:v100:1.
+    if "gpu" not in gres:
+        return 0
+
+    # Extract parts specifically for gpu entry if comma separated
+    gpu_part = ""
+    for part in gres.split(","):
+        if "gpu" in part:
+            gpu_part = part
+            break
+
+    if not gpu_part:
+        return 0
+
+    # gpu:types:count or gpu:count
+    # split by colon
+    subparts = gpu_part.split(":")
+    # look for the first part that is an integer? No, the count is usually the last number.
+    # But wait, "gpu:2" -> ["gpu", "2"]. "gpu:a100:2" -> ["gpu", "a100", "2"].
+    # "gpu" -> ["gpu"] (implies 1? No usually 0/error).
+
+    # Let's try to match the last integer segment
+    import re
+
+    match = re.search(r"gpu:(?:[^:]+:)?(\d+)", gpu_part)
+    if match:
+        return int(match.group(1))
+    return 0
+
+
+def _parse_slurm_duration(time_str: str) -> float:
+    # 1-02:03:04, 02:03:04, 20:00
+    try:
+        days = 0
+        if "-" in time_str:
+            d_part, time_str = time_str.split("-", 1)
+            days = int(d_part)
+
+        parts = time_str.split(":")
+        seconds = 0
+        if len(parts) == 3:  # HH:MM:SS
+            seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        elif len(parts) == 2:  # MM:SS
+            seconds = int(parts[0]) * 60 + int(parts[1])
+
+        return (days * 24 * 60) + (seconds / 60.0)
+    except (ValueError, IndexError):
+        return 0.0

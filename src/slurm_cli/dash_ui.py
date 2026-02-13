@@ -13,7 +13,10 @@ from slurm_cli.dash_logic import (
     cancel_dash_jobs,
     fetch_dash_jobs,
     join_job_via_remote,
+    fetch_blame_records,
+    BlameRecord,
 )
+
 from slurm_cli.forecast_cli import (
     DashForecastBundle,
     ForecastPoint,
@@ -76,7 +79,10 @@ class DashBoard:
         self.focus_index = 0
         self.selected_job_ids: Set[str] = set()
         self.status_message = "Loading jobs..."
+        self.blame_records: List[BlameRecord] = []
+        self.show_blame_panel = True
         self.forecast_horizon_hours = FORECAST_HORIZON_HOURS
+
         self.forecast_refresh_seconds = FORECAST_REFRESH_SECONDS
         self._forecast_bundle: Optional[DashForecastBundle] = None
         self._forecast_message = "Loading forecast..."
@@ -100,7 +106,9 @@ class DashBoard:
         target_id = focus_job_id or self.current_job_id()
         self.jobs = list(jobs)
         visible_ids = {job.job_id for job in self.jobs}
-        self.selected_job_ids = {job_id for job_id in self.selected_job_ids if job_id in visible_ids}
+        self.selected_job_ids = {
+            job_id for job_id in self.selected_job_ids if job_id in visible_ids
+        }
         self.focus_index = self._index_for_job(job_id=target_id)
 
     def toggle_selected_current(self) -> None:
@@ -156,6 +164,12 @@ class DashBoard:
         except Exception as exc:
             jobs = []
             self.status_message = f"Refresh failed: {exc}"
+
+        try:
+            self.blame_records = fetch_blame_records()
+        except Exception:
+            self.blame_records = []
+
         self.update_jobs(jobs=jobs, focus_job_id=focus_job_id)
 
     def _refresh_message(self, job_count: int) -> str:
@@ -184,7 +198,9 @@ class DashBoard:
             return
         self._forecast_stop_event.clear()
         self._forecast_refresh_event.set()
-        self._forecast_thread = threading.Thread(target=self._forecast_loop, name="dash-forecast", daemon=True)
+        self._forecast_thread = threading.Thread(
+            target=self._forecast_loop, name="dash-forecast", daemon=True
+        )
         self._forecast_thread.start()
 
     def _stop_forecast_worker(self) -> None:
@@ -278,7 +294,9 @@ class DashBoard:
                 continue
             self._set_forecast_loading()
             try:
-                bundle = take_dash_forecast_bundle(horizon_hours=self.forecast_horizon_hours)
+                bundle = take_dash_forecast_bundle(
+                    horizon_hours=self.forecast_horizon_hours
+                )
             except Exception as exc:
                 self._set_forecast_error(error_text=str(exc))
                 next_refresh = time.monotonic() + self.forecast_refresh_seconds
@@ -300,7 +318,11 @@ class DashBoard:
         elif key in (ord("r"), ord("R")):
             self._refresh_jobs()
             self._request_forecast_refresh()
+        elif key in (ord("b"), ord("B")):
+            self.show_blame_panel = not self.show_blame_panel
+
         elif key in (ord("c"), ord("C")):
+
             self._cancel_in_ui(stdscr=stdscr)
         elif key in (ord("v"), ord("V")):
             return self._join_from_ui()
@@ -318,7 +340,9 @@ class DashBoard:
         if not job_ids:
             self.status_message = "No job selected."
             return
-        if not self._confirm(stdscr=stdscr, prompt=f"Cancel {len(job_ids)} job(s)? [y/N]"):
+        if not self._confirm(
+            stdscr=stdscr, prompt=f"Cancel {len(job_ids)} job(s)? [y/N]"
+        ):
             self.status_message = "Cancel aborted."
             return
         result = cancel_dash_jobs(job_ids=job_ids)
@@ -354,27 +378,96 @@ class DashBoard:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
         forecast_top = _forecast_panel_top(screen_height=height)
-        _center_text(stdscr=stdscr, y=0, text=f"dash: {self.user_name}", attr=curses.A_BOLD)
-        _center_text(
+
+        blame_width = 65
+        # Require 145 chars to show both comfortably (80 for dash + 65 for blame)
+        can_fit_blame = width >= 145
+        show_blame = (
+            self.show_blame_panel and can_fit_blame and bool(self.blame_records)
+        )
+
+        if show_blame:
+            my_jobs_right = width - blame_width - 2
+            blame_left = width - blame_width
+            # Vertical separator
+            for y in range(forecast_top):
+                _safe_add(
+                    stdscr=stdscr, y=y, x=my_jobs_right + 1, text="│", attr=curses.A_DIM
+                )
+        else:
+            my_jobs_right = width - 1
+            blame_left = width
+
+        _center_text_range(
+            stdscr=stdscr,
+            y=0,
+            text=f"dash: {self.user_name}",
+            left=0,
+            right=my_jobs_right,
+            attr=curses.A_BOLD,
+        )
+
+        help_text = "Space=select • c=cancel • v=join • r=refresh • b=blame • q=quit"
+        _center_text_range(
             stdscr=stdscr,
             y=1,
-            text="R=green PD=yellow • Space=select • c=cancel • v=join • r=refresh • q=quit",
+            text=help_text,
+            left=0,
+            right=my_jobs_right,
             attr=curses.A_DIM,
         )
-        _safe_add(stdscr=stdscr, y=forecast_top - 1, x=1, text="-" * max(1, width - 2), attr=curses.A_DIM)
-        self._draw_rows(stdscr=stdscr, top=3, bottom=forecast_top - 2)
+
+        _panel_add(
+            stdscr=stdscr,
+            y=forecast_top - 1,
+            x=1,
+            text="─" * max(1, my_jobs_right - 1),
+            left=0,
+            right=my_jobs_right,
+            attr=curses.A_DIM,
+        )
+        self._draw_rows(
+            stdscr=stdscr, top=3, bottom=forecast_top - 2, left=1, right=my_jobs_right
+        )
+
+        if show_blame:
+            self._draw_blame_panel(
+                stdscr=stdscr,
+                top=0,
+                bottom=forecast_top - 1,
+                left=blame_left,
+                right=width - 1,
+            )
+
         self._draw_forecast_area(stdscr=stdscr, top=forecast_top, bottom=height - 2)
         self._draw_status(stdscr=stdscr)
         stdscr.refresh()
 
-    def _draw_rows(self, stdscr: "curses.window", top: int, bottom: int) -> None:
+    def _draw_rows(
+        self,
+        stdscr: "curses.window",
+        top: int,
+        bottom: int,
+        left: int = 1,
+        right: int = -1,
+    ) -> None:
         if bottom < top:
             return
+
+        real_right = right if right > 0 else (stdscr.getmaxyx()[1] - 1)
+
         if not self.jobs:
             row = top + max(0, (bottom - top) // 2)
-            _center_text(stdscr=stdscr, y=row, text="No jobs to display.", attr=curses.A_DIM)
+            _center_text_range(
+                stdscr=stdscr,
+                y=row,
+                text="No jobs to display.",
+                left=left,
+                right=real_right,
+                attr=curses.A_DIM,
+            )
             return
-        _, width = stdscr.getmaxyx()
+
         for row_idx, job in enumerate(self.jobs):
             y = top + row_idx
             if y > bottom:
@@ -383,9 +476,87 @@ class DashBoard:
             prefix = ">" if row_idx == self.focus_index else " "
             text = f"{prefix}[{marker}] {job.display_row()}"
             attr = self._row_attr(job=job, focused=row_idx == self.focus_index)
-            _safe_add(stdscr=stdscr, y=y, x=1, text=text[: max(1, width - 2)], attr=attr)
+            # Use _panel_add to respect the right boundary
+            _panel_add(
+                stdscr=stdscr,
+                y=y,
+                x=left,
+                text=text,
+                left=left,
+                right=real_right,
+                attr=attr,
+            )
 
-    def _draw_forecast_area(self, stdscr: "curses.window", top: int, bottom: int) -> None:
+    def _draw_blame_panel(
+        self, stdscr: "curses.window", top: int, bottom: int, left: int, right: int
+    ) -> None:
+        if bottom < top:
+            return
+
+        _center_text_range(
+            stdscr=stdscr,
+            y=top,
+            text="Top GPU Users (Sorted)",
+            left=left,
+            right=right,
+            attr=curses.A_BOLD,
+        )
+
+        # Header: Name(17) User(8) PI(16) Run(3) Pnd(3) Time(6)
+
+        header = (
+            f"{'Name':<17} {'User':<8} {'PI':<16} {'Run':>3} {'Pnd':>3} {'AvgReq':>7}"
+        )
+        _panel_add(
+            stdscr=stdscr,
+            y=top + 1,
+            x=left,
+            text=header,
+            left=left,
+            right=right,
+            attr=curses.A_DIM | curses.A_UNDERLINE,
+        )
+
+        for i, rec in enumerate(self.blame_records):
+            y = top + 2 + i
+            if y > bottom:
+                break
+
+            avg_str = _format_duration_short(rec.avg_request_minutes)
+
+            display_name = rec.full_name if rec.full_name else rec.username
+
+            name_str = (
+                (display_name[:16] + "…") if len(display_name) > 17 else display_name
+            )
+            u_str = (rec.username[:7] + "…") if len(rec.username) > 8 else rec.username
+
+            # Format PI name (full name)
+            pi_name = rec.coordinator_name
+            pi_str = (pi_name[:15] + "…") if len(pi_name) > 16 else pi_name
+
+            line = f"{name_str:<17} {u_str:<8} {pi_str:<16} {rec.running_gpus:>3} {rec.pending_gpus:>3} {avg_str:>7}"
+
+            # Highlight current user
+            attr = (
+                curses.A_BOLD | curses.A_REVERSE
+                if rec.username == self.user_name
+                else curses.A_NORMAL
+            )
+            if rec.running_gpus > 0:
+                attr |= curses.color_pair(PAIR_RUNNING)
+
+            elif rec.pending_gpus > 0:
+                # maybe yellow for pending heavy users?
+                pass
+
+            _panel_add(
+                stdscr=stdscr, y=y, x=left, text=line, left=left, right=right, attr=attr
+            )
+
+    def _draw_forecast_area(
+        self, stdscr: "curses.window", top: int, bottom: int
+    ) -> None:
         """Draw one or two forecast charts in the lower dashboard half."""
 
         if bottom < top:
@@ -396,7 +567,13 @@ class DashBoard:
         state = self._forecast_state()
         if state.bundle is None:
             self._draw_single_forecast_panel(
-                stdscr=stdscr, top=top, bottom=bottom, left=left, right=right, snapshot=None, state=state
+                stdscr=stdscr,
+                top=top,
+                bottom=bottom,
+                left=left,
+                right=right,
+                snapshot=None,
+                state=state,
             )
             return
         quad_snapshot = state.bundle.quad_partition
@@ -516,7 +693,9 @@ class DashBoard:
             attr=curses.A_BOLD,
         )
         if snapshot is None:
-            self._draw_forecast_placeholder(stdscr=stdscr, top=top, left=left, right=right, state=state)
+            self._draw_forecast_placeholder(
+                stdscr=stdscr, top=top, left=left, right=right, state=state
+            )
             return
         self._draw_forecast_chart(
             stdscr=stdscr,
@@ -527,7 +706,9 @@ class DashBoard:
             snapshot=snapshot,
         )
 
-    def _title_with_availability(self, title: str, snapshot: ForecastSnapshot | None) -> str:
+    def _title_with_availability(
+        self, title: str, snapshot: ForecastSnapshot | None
+    ) -> str:
         """Return title text with current availability fraction when available.
 
         Inputs:
@@ -543,7 +724,12 @@ class DashBoard:
         return f"{title} [{snapshot.title_metrics()}]"
 
     def _draw_forecast_placeholder(
-        self, stdscr: "curses.window", top: int, left: int, right: int, state: ForecastRenderState
+        self,
+        stdscr: "curses.window",
+        top: int,
+        left: int,
+        right: int,
+        state: ForecastRenderState,
     ) -> None:
         """Draw immediate placeholder text before forecast data is available.
 
@@ -558,8 +744,20 @@ class DashBoard:
         """
 
         message = state.message or "Loading forecast..."
-        attr = curses.A_DIM if state.is_loading else curses.color_pair(PAIR_ERROR) | curses.A_BOLD
-        _panel_add(stdscr=stdscr, y=top + 1, x=left, text=message, left=left, right=right, attr=attr)
+        attr = (
+            curses.A_DIM
+            if state.is_loading
+            else curses.color_pair(PAIR_ERROR) | curses.A_BOLD
+        )
+        _panel_add(
+            stdscr=stdscr,
+            y=top + 1,
+            x=left,
+            text=message,
+            left=left,
+            right=right,
+            attr=attr,
+        )
 
     def _draw_forecast_chart(
         self,
@@ -598,13 +796,23 @@ class DashBoard:
         chart_left = left + axis_width
         chart_width = right - chart_left + 1
         if chart_width < 12:
-            _panel_add(stdscr=stdscr, y=top, x=left, text="Panel too narrow.", left=left, right=right, attr=curses.A_DIM)
+            _panel_add(
+                stdscr=stdscr,
+                y=top,
+                x=left,
+                text="Panel too narrow.",
+                left=left,
+                right=right,
+                attr=curses.A_DIM,
+            )
             return
         points = _dense_panel_points(snapshot=snapshot, count=chart_width)
         vmax = max(1, max(point.available_gpus for point in points))
         for idx, point in enumerate(points):
             x = chart_left + idx
-            y = _plot_y_for_value(top=top, height=chart_height, value=point.available_gpus, vmax=vmax)
+            y = _plot_y_for_value(
+                top=top, height=chart_height, value=point.available_gpus, vmax=vmax
+            )
             _panel_add(
                 stdscr=stdscr,
                 y=y,
@@ -654,13 +862,23 @@ class DashBoard:
         """Draw non-overlapping y-axis labels for forecast availability values."""
 
         used_rows: Set[int] = set()
-        values = sorted(_forecast_y_tick_values(vmax=vmax, chart_height=chart_height), reverse=True)
+        values = sorted(
+            _forecast_y_tick_values(vmax=vmax, chart_height=chart_height), reverse=True
+        )
         for value in values:
             y = _plot_y_for_value(top=top, height=chart_height, value=value, vmax=vmax)
             if y in used_rows:
                 continue
             used_rows.add(y)
-            _panel_add(stdscr=stdscr, y=y, x=left, text=f"{value:>3} |", left=left, right=right, attr=curses.A_DIM)
+            _panel_add(
+                stdscr=stdscr,
+                y=y,
+                x=left,
+                text=f"{value:>3} |",
+                left=left,
+                right=right,
+                attr=curses.A_DIM,
+            )
 
     def _draw_forecast_x_ticks(
         self,
@@ -678,7 +896,15 @@ class DashBoard:
         values = [point.available_gpus for point in snapshot.points]
         xs = _tick_positions(left=chart_left, width=chart_width, count=len(labels))
         for x in xs:
-            _panel_add(stdscr=stdscr, y=baseline_y, x=x, text="+", left=left, right=right, attr=curses.A_DIM)
+            _panel_add(
+                stdscr=stdscr,
+                y=baseline_y,
+                x=x,
+                text="+",
+                left=left,
+                right=right,
+                attr=curses.A_DIM,
+            )
         last_end = left - 1
         for x, label in zip(xs, labels):
             start = max(left, x - (len(label) // 2))
@@ -776,7 +1002,9 @@ class DashBoard:
             focus = ">" if (idx - 1) == self.focus_index else " "
             print(f"{focus}{idx:02d}[{marker}] {job.display_row()}")
         print(self.status_message)
-        print("Commands: j/k move, s select, a all, c cancel, v join, r refresh, q quit")
+        print(
+            "Commands: j/k move, s select, a all, c cancel, v join, r refresh, q quit"
+        )
 
     def _handle_fallback_command(self, raw: str) -> Optional[int]:
         if raw in ("q", "quit"):
@@ -814,10 +1042,14 @@ class DashBoard:
 def run_dash_dashboard(user_name: str, editor_command: Optional[str] = None) -> int:
     """Run the dash dashboard for one user and return an exit code."""
 
-    return DashBoard(user_name=user_name, refresh_seconds=2, editor_command=editor_command).run()
+    return DashBoard(
+        user_name=user_name, refresh_seconds=2, editor_command=editor_command
+    ).run()
 
 
-def _safe_add(stdscr: "curses.window", y: int, x: int, text: str, attr: int = 0) -> None:
+def _safe_add(
+    stdscr: "curses.window", y: int, x: int, text: str, attr: int = 0
+) -> None:
     """Write clipped text safely within curses screen bounds."""
 
     height, width = stdscr.getmaxyx()
@@ -833,7 +1065,13 @@ def _safe_add(stdscr: "curses.window", y: int, x: int, text: str, attr: int = 0)
 
 
 def _panel_add(
-    stdscr: "curses.window", y: int, x: int, text: str, left: int, right: int, attr: int = 0
+    stdscr: "curses.window",
+    y: int,
+    x: int,
+    text: str,
+    left: int,
+    right: int,
+    attr: int = 0,
 ) -> None:
     """Write text clipped to one horizontal panel range."""
 
@@ -847,7 +1085,9 @@ def _panel_add(
     _safe_add(stdscr=stdscr, y=y, x=draw_x, text=clipped, attr=attr)
 
 
-def _split_panel_columns(left: int, right: int, gap: int) -> tuple[int, int, int, int] | None:
+def _split_panel_columns(
+    left: int, right: int, gap: int
+) -> tuple[int, int, int, int] | None:
     """Split a horizontal region into two equal-width panel columns."""
 
     total_width = right - left + 1
@@ -952,13 +1192,19 @@ def _dense_panel_points(snapshot: ForecastSnapshot, count: int) -> List[Forecast
     if count <= 1:
         base = snapshot.points[0].available_gpus if snapshot.points else 0
         return [ForecastPoint(offset_hours=0.0, available_gpus=base)]
-    horizon_hours = snapshot.points[-1].offset_hours if snapshot.points else FORECAST_HORIZON_HOURS
+    horizon_hours = (
+        snapshot.points[-1].offset_hours if snapshot.points else FORECAST_HORIZON_HOURS
+    )
     points: List[ForecastPoint] = []
     for idx in range(count):
         offset_hours = horizon_hours * idx / (count - 1)
         query = snapshot.generated_at + timedelta(hours=offset_hours)
-        available = step_value_at(query=query, times=snapshot.series_times, values=snapshot.series_available)
-        points.append(ForecastPoint(offset_hours=offset_hours, available_gpus=available))
+        available = step_value_at(
+            query=query, times=snapshot.series_times, values=snapshot.series_available
+        )
+        points.append(
+            ForecastPoint(offset_hours=offset_hours, available_gpus=available)
+        )
     return points
 
 
@@ -981,3 +1227,26 @@ def _center_text(stdscr: "curses.window", y: int, text: str, attr: int = 0) -> N
         stdscr.addstr(y, x, text, attr)
     except curses.error:
         return
+
+
+def _center_text_range(
+    stdscr: "curses.window", y: int, text: str, left: int, right: int, attr: int = 0
+) -> None:
+    width = right - left + 1
+    if width <= 0:
+        return
+    x_offset = max(0, (width - len(text)) // 2)
+    x = left + x_offset
+    _panel_add(stdscr=stdscr, y=y, x=x, text=text, left=left, right=right, attr=attr)
+
+
+def _format_duration_short(minutes: float) -> str:
+    if minutes < 1:
+        return "<1m"
+    if minutes < 60:
+        return f"{int(minutes)}m"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{hours:.1f}h"
+    days = hours / 24
+    return f"{days:.1f}d"
