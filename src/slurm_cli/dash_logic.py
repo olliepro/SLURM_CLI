@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from slurm_cli.remote_access import (
     RemoteOpenRequest,

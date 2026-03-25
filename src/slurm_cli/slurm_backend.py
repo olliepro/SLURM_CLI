@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import quote
 
+from slurm_cli.format_utils import parse_time_string
+from slurm_cli.partition_policy import PartitionRequest, recommend_partition
+
 
 JOB_ID_RE = re.compile(r"job\s+(\d+)")
 
@@ -20,6 +23,7 @@ def build_srun(
     account: str,
     shell: str,
     mem: str,
+    partition: Optional[str] = None,
 ) -> List[str]:
     """Construct the interactive `srun` command for terminal sessions.
 
@@ -30,6 +34,7 @@ def build_srun(
         account: Slurm account to charge.
         shell: Shell executed under `srun --pty`.
         mem: Memory request string compatible with Slurm.
+        partition: Optional Slurm partition override.
 
     Returns:
         Command arguments suitable for `subprocess` or exec.
@@ -41,6 +46,13 @@ def build_srun(
     """
 
     assert cpus >= 1, "cpus must be at least 1"
+    partition_name = _resolve_partition_name(
+        gpus=gpus,
+        cpus=cpus,
+        time_str=time_str,
+        mem=mem,
+        partition=partition,
+    )
     cmd: List[str] = ["srun"]
     if gpus > 0:
         cmd.append(f"--gres=gpu:{gpus}")
@@ -49,9 +61,9 @@ def build_srun(
         f"--time={time_str}",
         f"--account={account}",
         f"--mem={mem}",
-        "--pty",
-        shell,
     ]
+    _append_partition_arg(cmd=cmd, partition_name=partition_name)
+    cmd += ["--pty", shell]
     return cmd
 
 
@@ -63,6 +75,7 @@ def build_sbatch(
     mem: str,
     email: Optional[str],
     job_name: str,
+    partition: Optional[str] = None,
 ) -> List[str]:
     """Return an `sbatch` command that mirrors the interactive allocation.
 
@@ -74,6 +87,7 @@ def build_sbatch(
         mem: Memory request in Slurm format.
         email: Optional address for BEGIN notifications.
         job_name: Identifier shown in Slurm queues.
+        partition: Optional Slurm partition override.
 
     Returns:
         Parsed command list beginning with `sbatch`.
@@ -85,6 +99,13 @@ def build_sbatch(
     """
 
     assert cpus >= 1, "cpus must be at least 1"
+    partition_name = _resolve_partition_name(
+        gpus=gpus,
+        cpus=cpus,
+        time_str=time_str,
+        mem=mem,
+        partition=partition,
+    )
     cmd: List[str] = [
         "sbatch",
         "--parsable",
@@ -96,6 +117,7 @@ def build_sbatch(
     ]
     if gpus > 0:
         cmd.insert(1, f"--gres=gpu:{gpus}")
+    _append_partition_arg(cmd=cmd, partition_name=partition_name)
     if email:
         cmd += [f"--mail-user={email}", "--mail-type=BEGIN"]
     cmd += ["--wrap", "sleep infinity"]
@@ -109,6 +131,7 @@ def start_allocation_background(
     account: str,
     mem: str,
     job_name: str,
+    partition: Optional[str] = None,
 ) -> Tuple[subprocess.Popen[str], Optional[str]]:
     """Spawn a blocking `srun` allocation that holds resources in the background.
 
@@ -119,6 +142,7 @@ def start_allocation_background(
         account: Account that will be charged.
         mem: Memory request string.
         job_name: Friendly identifier for the allocation.
+        partition: Optional Slurm partition override.
 
     Returns:
         Tuple of the running `srun` process and the parsed Slurm job id (if any).
@@ -129,6 +153,13 @@ def start_allocation_background(
     """
 
     assert cpus >= 1, "cpus must be at least 1"
+    partition_name = _resolve_partition_name(
+        gpus=gpus,
+        cpus=cpus,
+        time_str=time_str,
+        mem=mem,
+        partition=partition,
+    )
     cmd = ["srun"]
     if gpus > 0:
         cmd.append(f"--gres=gpu:{gpus}")
@@ -138,10 +169,9 @@ def start_allocation_background(
         f"--account={account}",
         f"--mem={mem}",
         f"--job-name={job_name}",
-        "--pty",
-        "sleep",
-        "infinity",
     ]
+    _append_partition_arg(cmd=cmd, partition_name=partition_name)
+    cmd += ["--pty", "sleep", "infinity"]
     proc: subprocess.Popen[str] = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -226,6 +256,7 @@ def submit_batch_job(
     mem: str,
     email: Optional[str],
     job_name: str,
+    partition: Optional[str] = None,
 ) -> Optional[str]:
     """Submit a batch job mirroring the requested interactive resources.
 
@@ -237,6 +268,7 @@ def submit_batch_job(
         mem: Memory request string.
         email: Optional notification address.
         job_name: Slurm job name.
+        partition: Optional Slurm partition override.
 
     Returns:
         Slurm job id if submission succeeds, otherwise ``None``.
@@ -246,7 +278,16 @@ def submit_batch_job(
         '123456'
     """
 
-    cmd = build_sbatch(gpus, cpus, time_str, account, mem, email, job_name)
+    cmd = build_sbatch(
+        gpus=gpus,
+        cpus=cpus,
+        time_str=time_str,
+        account=account,
+        mem=mem,
+        email=email,
+        job_name=job_name,
+        partition=partition,
+    )
     try:
         out = subprocess.check_output(cmd, text=True).strip()
         return out or None
@@ -256,6 +297,31 @@ def submit_batch_job(
     except FileNotFoundError:
         print("ERROR: 'sbatch' not found on PATH.")
         return None
+
+
+def _resolve_partition_name(
+    gpus: int,
+    cpus: int,
+    time_str: str,
+    mem: str,
+    partition: Optional[str],
+) -> Optional[str]:
+    if partition:
+        return partition
+    time_minutes = parse_time_string(value=time_str)
+    assert time_minutes is not None, "time_str must be a valid Slurm walltime"
+    request = PartitionRequest(
+        gpus=gpus,
+        cpus=cpus,
+        time_minutes=time_minutes,
+        mem_str=mem,
+    )
+    return recommend_partition(request=request)
+
+
+def _append_partition_arg(cmd: List[str], partition_name: Optional[str]) -> None:
+    if partition_name:
+        cmd.append(f"--partition={partition_name}")
 
 
 def open_vscode_on_host(hostname: str, path: Optional[Path] = None) -> int:
