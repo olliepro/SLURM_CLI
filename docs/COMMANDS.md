@@ -4,6 +4,9 @@
 
 Runs the interactive allocation launcher.
 
+The resource picker includes a `Partition` row with `Auto` plus the current
+cluster's visible partitions.
+
 Examples:
 
 ```bash

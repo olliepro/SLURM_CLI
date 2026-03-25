@@ -31,6 +31,7 @@ from slurm_cli.format_utils import (
 TIME_MINUTE_OPTIONS = build_time_options()
 MEMORY_GB_OPTIONS = build_memory_options()
 TIMEOUT_LIMIT_OPTIONS = build_timeout_options()
+AUTO_PARTITION_LABEL = "Auto"
 
 
 def _center_text(stdscr, y: int, text: str, attr: int = 0) -> None:
@@ -61,24 +62,39 @@ def _prepare_curses_screen(stdscr: "curses.window") -> None:
 
 
 class ResourcePicker:
-    def __init__(self, time_minutes: int, gpus: int, cpus: int, mem_gb: int):
+    def __init__(
+        self,
+        time_minutes: int,
+        gpus: int,
+        cpus: int,
+        mem_gb: int,
+        initial_partition: Optional[str] = None,
+        available_partitions: Tuple[str, ...] = (),
+    ):
         self.time_idx = nearest_index(TIME_MINUTE_OPTIONS, max(5, time_minutes))
         self.gpus = max(0, min(4, gpus))
         self.cpus = max(1, min(MAX_CPUS, cpus))
         self.mem_idx = nearest_index(MEMORY_GB_OPTIONS, max(1, mem_gb))
+        self.partition_options = self._build_partition_options(
+            initial_partition=initial_partition,
+            available_partitions=available_partitions,
+        )
+        self.partition_idx = self._initial_partition_index(
+            initial_partition=initial_partition
+        )
         self.focus = 0
         self.canceled = False
         self._digit_focus = -1
         self._digit_buffer = ""
         self._digit_timestamp = 0.0
 
-    def run(self) -> Optional[Tuple[str, int, int, str]]:
+    def run(self) -> Optional[Tuple[str, int, int, str, Optional[str]]]:
         try:
             return curses.wrapper(self._curses_main)
         except curses.error:
             return self._fallback_prompt()
 
-    def _fallback_prompt(self) -> Optional[Tuple[str, int, int, str]]:
+    def _fallback_prompt(self) -> Optional[Tuple[str, int, int, str, Optional[str]]]:
         time_minutes = self._prompt_time()
         if time_minutes is None:
             return None
@@ -91,7 +107,16 @@ class ResourcePicker:
         mem_gb = self._prompt_memory()
         if mem_gb is None:
             return None
-        return minutes_to_slurm_time(time_minutes), gpus, cpus, f"{mem_gb}G"
+        partition_ok, partition_name = self._prompt_partition()
+        if not partition_ok:
+            return None
+        return (
+            minutes_to_slurm_time(time_minutes),
+            gpus,
+            cpus,
+            f"{mem_gb}G",
+            partition_name,
+        )
 
     def _prompt_time(self) -> Optional[int]:
         default = minutes_to_slurm_time(TIME_MINUTE_OPTIONS[self.time_idx])
@@ -160,6 +185,31 @@ class ResourcePicker:
                 return MEMORY_GB_OPTIONS[self.mem_idx]
             print("Enter a whole number of GB or a value like 50G/50000M.")
 
+    def _prompt_partition(self) -> Tuple[bool, Optional[str]]:
+        default = self._current_partition_label()
+        while True:
+            try:
+                raw = input(f"Partition [{default}]: ").strip()
+            except EOFError:
+                return False, None
+            value = sanitize_text(raw)
+            if not value:
+                return True, self.selected_partition
+            if value.isdigit():
+                choice = int(value) - 1
+                if 0 <= choice < len(self.partition_options):
+                    self.partition_idx = choice
+                    return True, self.selected_partition
+            normalized = value.rstrip("*").lower()
+            if normalized == AUTO_PARTITION_LABEL.lower():
+                self.partition_idx = 0
+                return True, None
+            for idx, partition_name in enumerate(self.partition_options[1:], start=1):
+                if partition_name == normalized:
+                    self.partition_idx = idx
+                    return True, partition_name
+            print(self._partition_prompt_help())
+
     def _curses_main(self, stdscr):
         """Render the resource picker UI in a curses loop.
 
@@ -189,10 +239,13 @@ class ResourcePicker:
             ("GPUs", str(self.gpus)),
             ("CPUs", str(self.cpus)),
             ("Memory", f"{MEMORY_GB_OPTIONS[self.mem_idx]}G"),
+            ("Partition", self._current_partition_label()),
         ]
         start_y = 5
         for idx, (label, value) in enumerate(rows):
-            attr = curses.A_REVERSE | curses.A_BOLD if idx == self.focus else curses.A_BOLD
+            attr = (
+                curses.A_REVERSE | curses.A_BOLD if idx == self.focus else curses.A_BOLD
+            )
             text = f"{label}: {value}"
             _center_text(stdscr, start_y + idx * 2, text, attr)
         _center_text(
@@ -204,7 +257,7 @@ class ResourcePicker:
         stdscr.refresh()
 
     def _handle_resource_key(self, ch: int):
-        row_count = 4
+        row_count = 5
         if ch == curses.KEY_UP:
             self.focus = (self.focus - 1) % row_count
         elif ch == curses.KEY_DOWN:
@@ -219,6 +272,7 @@ class ResourcePicker:
                 self.gpus,
                 self.cpus,
                 f"{MEMORY_GB_OPTIONS[self.mem_idx]}G",
+                self.selected_partition,
             )
         elif ch == 27:
             return False
@@ -228,13 +282,19 @@ class ResourcePicker:
 
     def _nudge(self, delta: int) -> None:
         if self.focus == 0:
-            self.time_idx = max(0, min(len(TIME_MINUTE_OPTIONS) - 1, self.time_idx + delta))
+            self.time_idx = max(
+                0, min(len(TIME_MINUTE_OPTIONS) - 1, self.time_idx + delta)
+            )
         elif self.focus == 1:
             self.gpus = max(0, min(4, self.gpus + delta))
         elif self.focus == 2:
             self.cpus = max(1, min(MAX_CPUS, self.cpus + delta))
-        else:
+        elif self.focus == 3:
             self.mem_idx = max(0, min(len(MEMORY_GB_OPTIONS) - 1, self.mem_idx + delta))
+        else:
+            self.partition_idx = (self.partition_idx + delta) % len(
+                self.partition_options
+            )
 
     def _apply_digit_input(self, key_code: int) -> None:
         """Accumulate typed digits for GPU/CPU selections."""
@@ -252,6 +312,37 @@ class ResourcePicker:
             self.gpus = max(0, min(4, value))
         elif self.focus == 2:
             self.cpus = max(1, min(MAX_CPUS, value))
+
+    @property
+    def selected_partition(self) -> Optional[str]:
+        return self.partition_options[self.partition_idx]
+
+    def _build_partition_options(
+        self,
+        initial_partition: Optional[str],
+        available_partitions: Tuple[str, ...],
+    ) -> List[Optional[str]]:
+        partition_names = sorted(set(available_partitions))
+        if initial_partition and initial_partition not in partition_names:
+            partition_names.append(initial_partition)
+            partition_names.sort()
+        return [None, *partition_names]
+
+    def _current_partition_label(self) -> str:
+        partition_name = self.selected_partition
+        return AUTO_PARTITION_LABEL if partition_name is None else partition_name
+
+    def _initial_partition_index(self, initial_partition: Optional[str]) -> int:
+        if initial_partition is None:
+            return 0
+        for idx, partition_name in enumerate(self.partition_options):
+            if partition_name == initial_partition:
+                return idx
+        return 0
+
+    def _partition_prompt_help(self) -> str:
+        options = [AUTO_PARTITION_LABEL, *self.partition_options[1:]]
+        return "Choose a listed partition or 'auto': " + ", ".join(options)
 
 
 class AccountPicker:
@@ -367,10 +458,14 @@ class AccountPicker:
         marker_new = "*" if self.focus == len(self.accounts) else " "
         rows.append(f"[{marker_new}] Add a new account…")
         for idx, text in enumerate(rows):
-            attr = curses.A_REVERSE | curses.A_BOLD if idx == self.focus else curses.A_BOLD
+            attr = (
+                curses.A_REVERSE | curses.A_BOLD if idx == self.focus else curses.A_BOLD
+            )
             _center_text(stdscr, 5 + idx * 2, text, attr)
             if idx < len(self.accounts):
-                age = humanize_age(_coerce_timestamp(self.accounts[idx].get("last_used")))
+                age = humanize_age(
+                    _coerce_timestamp(self.accounts[idx].get("last_used"))
+                )
                 attr_age = curses.A_DIM | (curses.A_REVERSE if idx == self.focus else 0)
                 _center_text(stdscr, 6 + idx * 2, age, attr_age)
         _center_text(
@@ -405,7 +500,9 @@ class AccountPicker:
                 stdscr.clear()
                 _center_text(stdscr, 2, prompt, curses.A_BOLD)
                 _center_text(stdscr, 4, "".join(buffer))
-                _center_text(stdscr, 8, "Press Enter to accept • ESC to cancel", curses.A_DIM)
+                _center_text(
+                    stdscr, 8, "Press Enter to accept • ESC to cancel", curses.A_DIM
+                )
                 stdscr.refresh()
                 ch = stdscr.getch()
                 if ch in (10, 13, curses.KEY_ENTER):
@@ -536,7 +633,12 @@ class TimeoutSettingsPicker:
         for idx, (label, _) in enumerate(modes):
             marker = "*" if idx == self.mode_idx else " "
             mode_line.append(f"[{marker}] {label}")
-        _center_text(stdscr, 5, "   ".join(mode_line), curses.A_REVERSE | curses.A_BOLD if self.focus == 0 else curses.A_BOLD)
+        _center_text(
+            stdscr,
+            5,
+            "   ".join(mode_line),
+            curses.A_REVERSE | curses.A_BOLD if self.focus == 0 else curses.A_BOLD,
+        )
         explanation = {
             TIMEOUT_IMPATIENT: "If no allocation is assigned within the limit, exit immediately.",
             TIMEOUT_NOTIFY: "If the limit hits, submit a batch job and email when it starts.",
@@ -546,10 +648,18 @@ class TimeoutSettingsPicker:
         attr = curses.A_REVERSE | curses.A_BOLD if self.focus == 1 else curses.A_BOLD
         _center_text(stdscr, 8, limit_text, attr)
         email_label = "Notify email: "
-        email_value = self.email or "(required)" if modes[self.mode_idx][1] == TIMEOUT_NOTIFY else "N/A"
-        email_attr = curses.A_REVERSE | curses.A_BOLD if self.focus == 2 else curses.A_BOLD
+        email_value = (
+            self.email or "(required)"
+            if modes[self.mode_idx][1] == TIMEOUT_NOTIFY
+            else "N/A"
+        )
+        email_attr = (
+            curses.A_REVERSE | curses.A_BOLD if self.focus == 2 else curses.A_BOLD
+        )
         _center_text(stdscr, 10, email_label + email_value, email_attr)
-        _center_text(stdscr, 12, "Use arrow keys • Enter to accept • ESC to cancel", curses.A_DIM)
+        _center_text(
+            stdscr, 12, "Use arrow keys • Enter to accept • ESC to cancel", curses.A_DIM
+        )
         stdscr.refresh()
 
     def _handle_timeout_key(self, ch: int, stdscr):
@@ -587,7 +697,9 @@ class TimeoutSettingsPicker:
         if self.focus == 0:
             self.mode_idx = (self.mode_idx + delta) % 2
         elif self.focus == 1:
-            self.limit_idx = max(0, min(len(TIMEOUT_LIMIT_OPTIONS) - 1, self.limit_idx + delta))
+            self.limit_idx = max(
+                0, min(len(TIMEOUT_LIMIT_OPTIONS) - 1, self.limit_idx + delta)
+            )
 
     def _inline_email_input(self, stdscr) -> str:
         curses.curs_set(1)
@@ -597,7 +709,9 @@ class TimeoutSettingsPicker:
                 stdscr.clear()
                 _center_text(stdscr, 2, "Notify email", curses.A_BOLD)
                 _center_text(stdscr, 4, "".join(buffer))
-                _center_text(stdscr, 8, "Press Enter to accept • ESC to cancel", curses.A_DIM)
+                _center_text(
+                    stdscr, 8, "Press Enter to accept • ESC to cancel", curses.A_DIM
+                )
                 stdscr.refresh()
                 ch = stdscr.getch()
                 if ch in (10, 13, curses.KEY_ENTER):
@@ -675,5 +789,7 @@ class UIModePicker:
             attr = curses.A_BOLD | (curses.A_REVERSE if self.focus == idx else 0)
             stdscr.addstr(5, x, item, attr)
             x += len(item) + 3
-        _center_text(stdscr, 7, "Use arrow keys • Enter to accept • ESC to cancel", curses.A_DIM)
+        _center_text(
+            stdscr, 7, "Use arrow keys • Enter to accept • ESC to cancel", curses.A_DIM
+        )
         stdscr.refresh()

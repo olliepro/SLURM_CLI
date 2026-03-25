@@ -291,7 +291,9 @@ def resolve_account(
 
 
 def resolve_resources(args: argparse.Namespace, cfg: Config) -> ResourceSelection:
-    partition_name = resolve_partition_override(partition_arg=args.partition)
+    partition_name, available_partitions = resolve_partition_selection(
+        partition_arg=args.partition
+    )
     time_cli = safe_cli_text(args.time)
     if args.time is not None and time_cli is None and args.time.strip():
         fail("--time must contain printable characters.")
@@ -341,11 +343,18 @@ def resolve_resources(args: argparse.Namespace, cfg: Config) -> ResourceSelectio
             mem_str=mem_cli_norm,
             partition=partition_name,
         )
-    picker = ResourcePicker(time_initial, gpus_initial, cpus_initial, mem_initial_gb)
+    picker = ResourcePicker(
+        time_minutes=time_initial,
+        gpus=gpus_initial,
+        cpus=cpus_initial,
+        mem_gb=mem_initial_gb,
+        initial_partition=partition_name,
+        available_partitions=available_partitions,
+    )
     result = picker.run()
     if result is None:
         cancel()
-    time_str, gpus, cpus, mem_str = result
+    time_str, gpus, cpus, mem_str, selected_partition = result
     time_minutes = parse_time_string(time_str) or time_initial
     mem_norm = parse_mem(mem_str) or f"{mem_initial_gb}G"
     return ResourceSelection(
@@ -354,7 +363,7 @@ def resolve_resources(args: argparse.Namespace, cfg: Config) -> ResourceSelectio
         gpus=gpus,
         cpus=cpus,
         mem_str=mem_norm,
-        partition=partition_name,
+        partition=selected_partition,
     )
 
 
@@ -399,7 +408,9 @@ def _initial_search_max_gpus(args: argparse.Namespace, cfg: Config) -> int:
 def resolve_search_resources(
     args: argparse.Namespace, cfg: Config
 ) -> ResourceSelection:
-    partition_name = resolve_partition_override(partition_arg=args.partition)
+    partition_name, available_partitions = resolve_partition_selection(
+        partition_arg=args.partition
+    )
     cpus_value = _resolve_cpus(cpus_cli=args.cpus, cfg=cfg)
     mem_cli, mem_initial = _resolve_mem(mem_arg=args.mem, cfg=cfg)
     time_initial = _initial_search_max_time(args=args, cfg=cfg)
@@ -413,11 +424,18 @@ def resolve_search_resources(
             mem_str=mem_cli,
             partition=partition_name,
         )
-    picker = ResourcePicker(time_initial, gpus_initial, cpus_value, mem_initial)
+    picker = ResourcePicker(
+        time_minutes=time_initial,
+        gpus=gpus_initial,
+        cpus=cpus_value,
+        mem_gb=mem_initial,
+        initial_partition=partition_name,
+        available_partitions=available_partitions,
+    )
     result = picker.run()
     if result is None:
         cancel()
-    time_str, gpus, cpus, mem_str = result
+    time_str, gpus, cpus, mem_str, selected_partition = result
     if gpus < 1:
         fail("search requires at least 1 GPU.")
     time_minutes = parse_time_string(time_str) or time_initial
@@ -428,7 +446,7 @@ def resolve_search_resources(
         gpus=gpus,
         cpus=cpus,
         mem_str=mem_norm,
-        partition=partition_name,
+        partition=selected_partition,
     )
 
 
@@ -520,24 +538,26 @@ def resolve_search_selection(
     )
 
 
-def resolve_partition_override(partition_arg: Optional[str]) -> Optional[str]:
-    """Validate an explicit partition override against the current cluster.
+def resolve_partition_selection(
+    partition_arg: Optional[str],
+) -> tuple[Optional[str], tuple[str, ...]]:
+    """Resolve the initial partition selection and available picker choices.
 
     Args:
         partition_arg: Raw partition text from CLI flags.
 
     Returns:
-        Lowercase partition name or ``None`` when no override was supplied.
+        Tuple of the normalized initial partition and all visible partition names.
     """
 
+    available_partitions = list_partition_names()
     partition_cli = safe_cli_text(partition_arg)
     if partition_arg is not None and partition_cli is None and partition_arg.strip():
         fail("--partition must contain printable characters.")
     if partition_cli is None:
-        return None
-    available_partitions = list_partition_names()
+        return None, available_partitions
     try:
-        return validate_partition_name(
+        partition_name = validate_partition_name(
             partition_name=partition_cli,
             available_partitions=available_partitions,
         )
@@ -545,6 +565,7 @@ def resolve_partition_override(partition_arg: Optional[str]) -> Optional[str]:
         available_text = ", ".join(available_partitions) if available_partitions else ""
         suffix = f" Known partitions: {available_text}" if available_text else ""
         fail(f"--partition must match a partition on this cluster.{suffix}")
+    return partition_name, available_partitions
 
 
 def resolve_ui_mode(args: argparse.Namespace, cfg: Config) -> str:
