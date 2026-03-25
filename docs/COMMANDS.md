@@ -9,6 +9,7 @@ Examples:
 ```bash
 gpu
 gpu launch --time 01:00:00 --gpus 1 --cpus 8 --mem 50G --account PXXXX
+gpu launch --time 00:30:00 --gpus 1 --partition quad --account PXXXX
 gpu launch --ui vscode --timeout-mode notify --notify-email you@osu.edu
 ```
 
@@ -21,6 +22,7 @@ Examples:
 ```bash
 gpu search
 gpu search --max-time 04:00:00 --min-time 00:30:00 --max-gpus 4 --min-gpus 1
+gpu search --max-time 02:00:00 --max-gpus 1 --partition debug-nextgen
 gpu search --dry-run --yes
 ```
 

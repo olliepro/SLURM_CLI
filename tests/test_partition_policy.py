@@ -4,8 +4,10 @@ import unittest
 
 from slurm_cli.partition_policy import (  # noqa: E402
     PartitionRequest,
+    list_partition_names,
     parse_cluster_name,
     recommend_partition,
+    validate_partition_name,
 )
 
 
@@ -15,6 +17,19 @@ class PartitionPolicyTests(unittest.TestCase):
             config_text="ClusterName = Cardinal\nPriorityType = priority/multifactor\n"
         )
         self.assertEqual(cluster_name, "cardinal")
+
+    def test_list_partition_names_sorts_and_normalizes(self) -> None:
+        partition_names = list_partition_names(
+            load_partitions=lambda: "PartitionName=Quad\nPartitionName=debug*\n"
+        )
+        self.assertEqual(partition_names, ("debug", "quad"))
+
+    def test_validate_partition_name_normalizes_case(self) -> None:
+        partition_name = validate_partition_name(
+            partition_name="Quad",
+            available_partitions=("debug", "quad"),
+        )
+        self.assertEqual(partition_name, "quad")
 
     def test_ascend_uses_debug_nextgen_for_short_single_gpu(self) -> None:
         partition_name = recommend_partition(

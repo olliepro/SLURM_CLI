@@ -5,6 +5,7 @@ import unittest
 from slurm_cli.search_logic import (  # noqa: E402
     SearchBounds,
     SearchProbe,
+    build_probe_command,
     build_search_probes,
     format_compact_minutes,
 )
@@ -21,7 +22,9 @@ class SearchLogicTests(unittest.TestCase):
         )
         probes = build_search_probes(bounds=bounds, cpus=8, mem_str="50G")
         pairs = [(probe.time_minutes, probe.gpus) for probe in probes]
-        self.assertEqual(pairs, [(240, 4), (120, 4), (60, 4), (30, 4), (30, 2), (30, 1)])
+        self.assertEqual(
+            pairs, [(240, 4), (120, 4), (60, 4), (30, 4), (30, 2), (30, 1)]
+        )
 
     def test_switch_happens_below_one_hour(self) -> None:
         bounds = SearchBounds(
@@ -83,6 +86,24 @@ class SearchLogicTests(unittest.TestCase):
             probe.job_label(prefix="slurmcli-search"),
             "1h30m-g2-slurmcli-search",
         )
+
+    def test_build_probe_command_includes_partition_override(self) -> None:
+        probe = SearchProbe(
+            time_minutes=30,
+            gpus=1,
+            cpus=4,
+            mem_str="32G",
+            phase="time",
+            index=1,
+        )
+        command = build_probe_command(
+            probe=probe,
+            account="P123",
+            email="user@example.com",
+            job_prefix="demo",
+            partition="quad",
+        )
+        self.assertIn("--partition=quad", command)
 
 
 if __name__ == "__main__":

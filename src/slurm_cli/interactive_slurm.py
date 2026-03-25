@@ -42,6 +42,7 @@ from slurm_cli.pickers import (
     TimeoutSettingsPicker,
     UIModePicker,
 )
+from slurm_cli.partition_policy import list_partition_names, validate_partition_name
 from slurm_cli.search_ui import (
     SearchBoundsPicker,
     SearchEmailPicker,
@@ -74,6 +75,7 @@ class ResourceSelection:
     gpus: int
     cpus: int
     mem_str: str
+    partition: Optional[str]
 
 
 @dataclass
@@ -113,6 +115,10 @@ def build_launch_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mem", help="Memory request (e.g., 50G, 50000M)")
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the command and exit"
+    )
+    parser.add_argument(
+        "--partition",
+        help="Override auto-selected partition with any valid partition on this cluster",
     )
     parser.add_argument("--ui", choices=[UI_TERMINAL, UI_VSCODE], help="Attach mode")
     parser.add_argument(
@@ -186,6 +192,10 @@ def build_search_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print planned commands and exit"
+    )
+    parser.add_argument(
+        "--partition",
+        help="Override auto-selected partition with any valid partition on this cluster",
     )
     parser.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
     return parser
@@ -281,6 +291,7 @@ def resolve_account(
 
 
 def resolve_resources(args: argparse.Namespace, cfg: Config) -> ResourceSelection:
+    partition_name = resolve_partition_override(partition_arg=args.partition)
     time_cli = safe_cli_text(args.time)
     if args.time is not None and time_cli is None and args.time.strip():
         fail("--time must contain printable characters.")
@@ -328,6 +339,7 @@ def resolve_resources(args: argparse.Namespace, cfg: Config) -> ResourceSelectio
             gpus=gpus_cli,
             cpus=cpus_value,
             mem_str=mem_cli_norm,
+            partition=partition_name,
         )
     picker = ResourcePicker(time_initial, gpus_initial, cpus_initial, mem_initial_gb)
     result = picker.run()
@@ -342,6 +354,7 @@ def resolve_resources(args: argparse.Namespace, cfg: Config) -> ResourceSelectio
         gpus=gpus,
         cpus=cpus,
         mem_str=mem_norm,
+        partition=partition_name,
     )
 
 
@@ -383,7 +396,10 @@ def _initial_search_max_gpus(args: argparse.Namespace, cfg: Config) -> int:
     return max(1, min(4, DEFAULT_GPUS))
 
 
-def resolve_search_resources(args: argparse.Namespace, cfg: Config) -> ResourceSelection:
+def resolve_search_resources(
+    args: argparse.Namespace, cfg: Config
+) -> ResourceSelection:
+    partition_name = resolve_partition_override(partition_arg=args.partition)
     cpus_value = _resolve_cpus(cpus_cli=args.cpus, cfg=cfg)
     mem_cli, mem_initial = _resolve_mem(mem_arg=args.mem, cfg=cfg)
     time_initial = _initial_search_max_time(args=args, cfg=cfg)
@@ -395,6 +411,7 @@ def resolve_search_resources(args: argparse.Namespace, cfg: Config) -> ResourceS
             gpus=args.max_gpus,
             cpus=cpus_value,
             mem_str=mem_cli,
+            partition=partition_name,
         )
     picker = ResourcePicker(time_initial, gpus_initial, cpus_value, mem_initial)
     result = picker.run()
@@ -411,6 +428,7 @@ def resolve_search_resources(args: argparse.Namespace, cfg: Config) -> ResourceS
         gpus=gpus,
         cpus=cpus,
         mem_str=mem_norm,
+        partition=partition_name,
     )
 
 
@@ -502,6 +520,33 @@ def resolve_search_selection(
     )
 
 
+def resolve_partition_override(partition_arg: Optional[str]) -> Optional[str]:
+    """Validate an explicit partition override against the current cluster.
+
+    Args:
+        partition_arg: Raw partition text from CLI flags.
+
+    Returns:
+        Lowercase partition name or ``None`` when no override was supplied.
+    """
+
+    partition_cli = safe_cli_text(partition_arg)
+    if partition_arg is not None and partition_cli is None and partition_arg.strip():
+        fail("--partition must contain printable characters.")
+    if partition_cli is None:
+        return None
+    available_partitions = list_partition_names()
+    try:
+        return validate_partition_name(
+            partition_name=partition_cli,
+            available_partitions=available_partitions,
+        )
+    except ValueError:
+        available_text = ", ".join(available_partitions) if available_partitions else ""
+        suffix = f" Known partitions: {available_text}" if available_text else ""
+        fail(f"--partition must match a partition on this cluster.{suffix}")
+
+
 def resolve_ui_mode(args: argparse.Namespace, cfg: Config) -> str:
     if args.ui:
         return args.ui
@@ -578,6 +623,7 @@ def run_terminal_mode(
         account=account,
         shell=shell,
         mem=resources.mem_str,
+        partition=resources.partition,
     )
 
     print_cmd(cmd, dry_run)
@@ -602,6 +648,7 @@ def run_vscode_mode(
         account=account,
         mem=resources.mem_str,
         job_name="slurmcli-vscode",
+        partition=resources.partition,
     )
     print("Starting allocation in the background for VS Code…")
     assert job_id is not None, "srun command failed"
@@ -651,17 +698,22 @@ def _search_submitter(
         gap_seconds=SEARCH_SUBMIT_GAP_SECONDS,
         job_prefix=SEARCH_JOB_PREFIX,
         dry_run=dry_run,
+        partition=selection.resources.partition,
         status_callback=callback,
     )
 
 
-def _print_search_plan(selection: SearchSelection, probes: Sequence[SearchProbe]) -> None:
+def _print_search_plan(
+    selection: SearchSelection, probes: Sequence[SearchProbe]
+) -> None:
     print("\n=== Search plan ===")
     print(f"Account: {selection.account}")
     print(f"Notify email: {selection.notify_email}")
     print(
         f"Fixed resources: cpus={selection.resources.cpus} mem={selection.resources.mem_str}"
     )
+    partition_label = selection.resources.partition or "auto"
+    print(f"Partition: {partition_label}")
     print(
         "Bounds: "
         f"max={minutes_to_slurm_time(selection.bounds.max_time_minutes)}"
@@ -684,6 +736,7 @@ def _print_search_dry_run(
             account=selection.account,
             email=selection.notify_email,
             job_prefix=SEARCH_JOB_PREFIX,
+            partition=selection.resources.partition,
         )
         print(" ".join(shlex.quote(part) for part in cmd))
 
@@ -708,7 +761,9 @@ def _run_search_submission(
     require_confirmation: bool,
 ) -> tuple[List[SearchSubmissionResult], bool]:
     if _should_use_search_dashboard():
-        dashboard = SearchSubmissionDashboard(probes=probes, job_prefix=SEARCH_JOB_PREFIX)
+        dashboard = SearchSubmissionDashboard(
+            probes=probes, job_prefix=SEARCH_JOB_PREFIX
+        )
         results = dashboard.run(
             submitter=lambda callback: _search_submitter(
                 selection=selection,
@@ -831,6 +886,7 @@ def notify_batch_fallback(
         mem=resources.mem_str,
         email=email,
         job_name=job_name,
+        partition=resources.partition,
     )
     if dry_run:
         print(message)
@@ -846,6 +902,7 @@ def notify_batch_fallback(
         mem=resources.mem_str,
         email=email,
         job_name=job_name,
+        partition=resources.partition,
     )
     if not job_id:
         print("ERROR: sbatch submission failed.")

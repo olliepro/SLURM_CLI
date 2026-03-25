@@ -151,6 +151,7 @@ def build_probe_command(
     account: str,
     email: str,
     job_prefix: str,
+    partition: Optional[str] = None,
 ) -> List[str]:
     """Build the ``sbatch`` command for a single probe.
 
@@ -159,6 +160,7 @@ def build_probe_command(
         account: Account charged for the batch job.
         email: Notification address for ``BEGIN`` mail.
         job_prefix: Prefix used in job naming.
+        partition: Optional partition override applied to every probe.
 
     Returns:
         Command list suitable for subprocess execution.
@@ -172,10 +174,13 @@ def build_probe_command(
         mem=probe.mem_str,
         email=email,
         job_name=probe.job_label(prefix=job_prefix),
+        partition=partition,
     )
 
 
-def build_search_probes(bounds: SearchBounds, cpus: int, mem_str: str) -> List[SearchProbe]:
+def build_search_probes(
+    bounds: SearchBounds, cpus: int, mem_str: str
+) -> List[SearchProbe]:
     """Generate ordered probes for the two-phase halving search.
 
     Args:
@@ -213,6 +218,7 @@ def submit_search_probes(
     gap_seconds: int,
     job_prefix: str,
     dry_run: bool,
+    partition: Optional[str] = None,
     status_callback: Optional[Callable[[SearchSubmissionResult], None]] = None,
     submit_batch: Callable[..., Optional[str]] = submit_batch_job,
 ) -> List[SearchSubmissionResult]:
@@ -225,6 +231,7 @@ def submit_search_probes(
         gap_seconds: Delay between consecutive submissions.
         job_prefix: Prefix for probe job names.
         dry_run: If true, do not submit and return synthetic pending results.
+        partition: Optional partition override shared by all probes.
         status_callback: Optional callback called after each result.
         submit_batch: Submission function injected for testing.
 
@@ -241,6 +248,7 @@ def submit_search_probes(
             email=email,
             job_prefix=job_prefix,
             dry_run=dry_run,
+            partition=partition,
             submit_batch=submit_batch,
         )
         results.append(result)
@@ -256,7 +264,9 @@ def submit_search_probes(
     return results
 
 
-def _build_time_phase(bounds: SearchBounds, cpus: int, mem_str: str) -> List[SearchProbe]:
+def _build_time_phase(
+    bounds: SearchBounds, cpus: int, mem_str: str
+) -> List[SearchProbe]:
     probes = [
         SearchProbe(
             time_minutes=bounds.max_time_minutes,
@@ -347,6 +357,7 @@ def _submit_probe(
     email: str,
     job_prefix: str,
     dry_run: bool,
+    partition: Optional[str],
     submit_batch: Callable[..., Optional[str]],
 ) -> SearchSubmissionResult:
     if dry_run:
@@ -364,6 +375,7 @@ def _submit_probe(
         mem=probe.mem_str,
         email=email,
         job_name=probe.job_label(prefix=job_prefix),
+        partition=partition,
     )
     return SearchSubmissionResult(
         probe=probe,

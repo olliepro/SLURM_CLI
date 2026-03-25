@@ -60,6 +60,10 @@ class SearchParserTests(unittest.TestCase):
         self.assertEqual(args.min_gpus, 1)
         self.assertTrue(args.yes)
 
+    def test_search_parser_accepts_partition_override(self) -> None:
+        args = parse_search_args(argv=["--partition", "quad"])
+        self.assertEqual(args.partition, "quad")
+
     def test_parses_dash_without_flags(self) -> None:
         args = parse_dash_args(argv=[])
         self.assertEqual(args.user, None)
@@ -75,8 +79,9 @@ class SearchParserTests(unittest.TestCase):
         self.assertEqual(args.editor, "cursor")
 
     def test_launch_parser_unchanged(self) -> None:
-        args = parse_launch_args(argv=["--shell", "bash"])
+        args = parse_launch_args(argv=["--shell", "bash", "--partition", "quad"])
         self.assertEqual(args.shell, "bash")
+        self.assertEqual(args.partition, "quad")
 
 
 if __name__ == "__main__":
