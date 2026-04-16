@@ -6,10 +6,13 @@ from datetime import datetime
 from slurm_cli.forecast_core import (  # noqa: E402
     JobRecord,
     NodeCapacity,
+    is_unavailable_availability_state,
     max_colocated_available_gpus,
+    node_available_gpus,
     parse_partition_names,
     partition_node_capacities,
     record_targets_partition,
+    total_gpu_capacity,
 )
 
 
@@ -42,6 +45,7 @@ def _capacity(
     partitions: tuple[str, ...],
     gpus: int = 4,
     gpu_alloc: int = 0,
+    state: str = "IDLE",
 ) -> NodeCapacity:
     return NodeCapacity(
         node_name=node_name,
@@ -52,6 +56,7 @@ def _capacity(
         mem_alloc_mib=0,
         gpu_alloc=gpu_alloc,
         partition_names=partitions,
+        state=state,
     )
 
 
@@ -119,6 +124,45 @@ class ForecastPartitioningTests(unittest.TestCase):
             max_colocated_available_gpus(node_capacities=nodes, partition_name="quad"),
             3,
         )
+
+    def test_node_available_gpus_excludes_maintenance_and_drain(self) -> None:
+        maintenance = _capacity(
+            node_name="node-a",
+            partitions=("gpu",),
+            gpus=4,
+            gpu_alloc=0,
+            state="IDLE+MAINTENANCE+RESERVED",
+        )
+        drained = _capacity(
+            node_name="node-b",
+            partitions=("gpu",),
+            gpus=4,
+            gpu_alloc=0,
+            state="IDLE+DRAIN",
+        )
+        self.assertTrue(
+            is_unavailable_availability_state(state_text=maintenance.state)
+        )
+        self.assertEqual(node_available_gpus(capacity=maintenance), 0)
+        self.assertEqual(node_available_gpus(capacity=drained), 0)
+
+    def test_total_gpu_capacity_excludes_maintenance_and_drain(self) -> None:
+        nodes = {
+            "node-a": _capacity(node_name="node-a", partitions=("gpu",), gpus=4),
+            "node-b": _capacity(
+                node_name="node-b",
+                partitions=("gpu",),
+                gpus=4,
+                state="IDLE+MAINTENANCE+RESERVED",
+            ),
+            "node-c": _capacity(
+                node_name="node-c",
+                partitions=("gpu",),
+                gpus=4,
+                state="IDLE+DRAIN",
+            ),
+        }
+        self.assertEqual(total_gpu_capacity(node_capacities=nodes), 4)
 
 
 if __name__ == "__main__":

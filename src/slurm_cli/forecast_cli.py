@@ -35,6 +35,7 @@ from slurm_cli.forecast_core import (
     run_command,
     total_gpu_capacity,
 )
+from slurm_cli.partition_policy import detect_cluster_name
 
 
 HALF_HOUR = 0.5
@@ -191,6 +192,26 @@ def fetch_slurm_state() -> tuple[str, str]:
     return raw_jobs, raw_nodes
 
 
+def default_primary_partition(cluster_name: str | None) -> str | None:
+    """Return the default partition scope for the primary forecast.
+
+    Inputs:
+    - `cluster_name`: detected Slurm cluster name.
+
+    Outputs:
+    - Partition name when the primary forecast should be partition-scoped.
+
+    Example:
+        >>> default_primary_partition(cluster_name="cardinal")
+        'gpu'
+    """
+
+    normalized_cluster = (cluster_name or "").lower()
+    if normalized_cluster == "cardinal":
+        return "gpu"
+    return None
+
+
 def build_forecast_series(
     now: datetime,
     horizon_hours: float,
@@ -296,6 +317,8 @@ def take_snapshot(horizon_hours: float) -> ForecastSnapshot:
     - `snapshot = take_snapshot(horizon_hours=8.0)`
     """
 
+    cluster_name = detect_cluster_name()
+    target_partition = default_primary_partition(cluster_name=cluster_name)
     now = datetime.now()
     raw_jobs, raw_nodes = fetch_slurm_state()
     node_capacities = parse_node_capacities(raw_nodes=raw_nodes)
@@ -304,6 +327,7 @@ def take_snapshot(horizon_hours: float) -> ForecastSnapshot:
         horizon_hours=horizon_hours,
         raw_jobs=raw_jobs,
         node_capacities=node_capacities,
+        target_partition=target_partition,
     )
 
 
@@ -320,6 +344,8 @@ def take_dash_forecast_bundle(horizon_hours: float) -> DashForecastBundle:
     - `bundle = take_dash_forecast_bundle(horizon_hours=8.0)`
     """
 
+    cluster_name = detect_cluster_name()
+    primary_partition = default_primary_partition(cluster_name=cluster_name)
     now = datetime.now()
     raw_jobs, raw_nodes = fetch_slurm_state()
     node_capacities = parse_node_capacities(raw_nodes=raw_nodes)
@@ -328,6 +354,7 @@ def take_dash_forecast_bundle(horizon_hours: float) -> DashForecastBundle:
         horizon_hours=horizon_hours,
         raw_jobs=raw_jobs,
         node_capacities=node_capacities,
+        target_partition=primary_partition,
     )
     quad_capacity = partition_gpu_capacity(node_capacities=node_capacities, partition_name="quad")
     if quad_capacity <= 0:

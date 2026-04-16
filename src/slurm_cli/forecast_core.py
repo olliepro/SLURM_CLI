@@ -30,6 +30,7 @@ ACTIVE_STATES = {"RUNNING", "PENDING"}
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 NONE_VALUES = {"Unknown", "N/A", "None", "(null)", ""}
 HALF_HOUR_MINUTES = 30
+UNAVAILABLE_AVAILABILITY_STATES = {"MAINTENANCE", "DRAIN"}
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ class NodeCapacity:
     mem_alloc_mib: int
     gpu_alloc: int
     partition_names: tuple[str, ...]
+    state: str = ""
 
 
 @dataclass(frozen=True)
@@ -387,6 +389,7 @@ def parse_node_capacities(raw_nodes: str) -> dict[str, NodeCapacity]:
                 mem_alloc_mib=mem_alloc_mib,
                 gpu_alloc=gpu_alloc,
                 partition_names=parse_partition_names(value=fields.get("Partitions", "")),
+                state=fields.get("State", ""),
             )
     return capacities
 
@@ -722,7 +725,43 @@ def build_step_series(
 def total_gpu_capacity(node_capacities: dict[str, NodeCapacity]) -> int:
     """Sum cluster GPU capacity from parsed node capacities."""
 
-    return sum(capacity.gpus for capacity in node_capacities.values())
+    return sum(
+        schedulable_gpu_capacity(capacity=capacity)
+        for capacity in node_capacities.values()
+    )
+
+
+def is_unavailable_availability_state(state_text: str) -> bool:
+    """Return true when a node state should be excluded from availability.
+
+    Inputs:
+    - `state_text`: raw Slurm node state string.
+
+    Outputs:
+    - Boolean flag indicating maintenance or drain state.
+
+    Example:
+        >>> is_unavailable_availability_state(state_text="IDLE+MAINTENANCE+RESERVED")
+        True
+    """
+
+    state_tokens = {token.strip().upper() for token in state_text.split("+") if token}
+    return bool(state_tokens & UNAVAILABLE_AVAILABILITY_STATES)
+
+
+def schedulable_gpu_capacity(capacity: NodeCapacity) -> int:
+    """Return schedulable GPU capacity after state-based exclusions.
+
+    Inputs:
+    - `capacity`: parsed node capacity and allocation values.
+
+    Outputs:
+    - GPU capacity count, or zero when the node is drained or in maintenance.
+    """
+
+    if is_unavailable_availability_state(state_text=capacity.state):
+        return 0
+    return capacity.gpus
 
 
 def node_available_gpus(capacity: NodeCapacity) -> int:
@@ -735,6 +774,8 @@ def node_available_gpus(capacity: NodeCapacity) -> int:
     - Integer available GPUs on that node at snapshot time.
     """
 
+    if is_unavailable_availability_state(state_text=capacity.state):
+        return 0
     return max(capacity.gpus - capacity.gpu_alloc, 0)
 
 
