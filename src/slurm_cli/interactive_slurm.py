@@ -13,7 +13,6 @@ from slurm_cli.config_store import Config, find_account_entry, record_account_us
 from slurm_cli.constants import (
     DEFAULT_MEM_GB,
     DEFAULT_SHELL,
-    DEFAULT_TIMEOUT_LIMIT_SECONDS,
     DEFAULT_TIME_MINUTES,
     DEFAULT_GPUS,
     DEFAULT_CPUS,
@@ -36,11 +35,15 @@ from slurm_cli.format_utils import (
     sanitize_text,
 )
 from slurm_cli.dash_ui import run_dash_dashboard
+from slurm_cli.launch_flow import (
+    ResourceSelection,
+    build_default_launch_namespace,
+    run_dashboard_launch_flow,
+    run_launch_flow,
+)
 from slurm_cli.pickers import (
     AccountPicker,
     ResourcePicker,
-    TimeoutSettingsPicker,
-    UIModePicker,
 )
 from slurm_cli.partition_policy import list_partition_names, validate_partition_name
 from slurm_cli.search_ui import (
@@ -59,30 +62,7 @@ from slurm_cli.search_logic import (
 )
 from slurm_cli.slurm_backend import (
     build_sbatch,
-    build_srun,
-    get_node_for_job,
-    open_vscode_on_host,
-    print_release_instructions,
-    start_allocation_background,
-    submit_batch_job,
 )
-
-
-@dataclass
-class ResourceSelection:
-    time_str: str
-    time_minutes: int
-    gpus: int
-    cpus: int
-    mem_str: str
-    partition: Optional[str]
-
-
-@dataclass
-class TimeoutSelection:
-    mode: str
-    limit_seconds: int
-    email: str
 
 
 @dataclass
@@ -568,136 +548,6 @@ def resolve_partition_selection(
     return partition_name, available_partitions
 
 
-def resolve_ui_mode(args: argparse.Namespace, cfg: Config) -> str:
-    if args.ui:
-        return args.ui
-    initial = cfg.last_ui if cfg.last_ui in (UI_TERMINAL, UI_VSCODE) else UI_TERMINAL
-    picker = UIModePicker(initial)
-    ui_mode = picker.run()
-    if ui_mode is None:
-        cancel()
-    return ui_mode
-
-
-def resolve_timeout(
-    args: argparse.Namespace, cfg: Config, ui_mode: str
-) -> TimeoutSelection:
-    mode_cli = args.timeout_mode
-    limit_cli = (
-        args.timeout_limit if args.timeout_limit and args.timeout_limit >= 15 else None
-    )
-    email_cli = safe_cli_text(args.notify_email)
-    if (
-        args.notify_email is not None
-        and email_cli is None
-        and args.notify_email.strip()
-    ):
-        fail("--notify-email must contain printable characters.")
-    limit_initial = cfg.last_timeout_limit_seconds or DEFAULT_TIMEOUT_LIMIT_SECONDS
-    limit_initial = limit_cli or limit_initial
-
-    def finalize(mode: str, seconds: int, email: str) -> TimeoutSelection:
-        seconds = max(15, seconds)
-        if mode == TIMEOUT_NOTIFY:
-            if not email:
-                email = prompt_email()
-        else:
-            email = ""
-        return TimeoutSelection(mode, seconds, email)
-
-    overrides_supplied = any(
-        [
-            mode_cli is not None,
-            limit_cli is not None,
-            args.notify_email is not None,
-        ]
-    )
-    if overrides_supplied:
-        mode = mode_cli or cfg.last_timeout_mode or TIMEOUT_IMPATIENT
-        email = email_cli or cfg.last_notify_email or ""
-        return finalize(mode, limit_initial, email)
-
-    if ui_mode == UI_TERMINAL:
-        return finalize(TIMEOUT_IMPATIENT, limit_initial, "")
-
-    mode_initial = cfg.last_timeout_mode or TIMEOUT_IMPATIENT
-    email_initial = cfg.last_notify_email or ""
-    picker = TimeoutSettingsPicker(mode_initial, limit_initial, email_initial)
-    result = picker.run()
-    if result is None:
-        cancel()
-    mode, limit_seconds, email = result
-    return finalize(mode, limit_seconds, email)
-
-
-def run_terminal_mode(
-    resources: ResourceSelection,
-    account: str,
-    shell: str,
-    timeout: TimeoutSelection,
-    dry_run: bool,
-) -> None:
-    cmd = build_srun(
-        gpus=resources.gpus,
-        cpus=resources.cpus,
-        time_str=resources.time_str,
-        account=account,
-        shell=shell,
-        mem=resources.mem_str,
-        partition=resources.partition,
-    )
-
-    print_cmd(cmd, dry_run)
-    if dry_run:
-        return
-    if not sys.stdin.isatty():
-        os.execvp(cmd[0], cmd)
-    if confirm(cmd):
-        try:
-            os.execvp(cmd[0], cmd)
-        except Exception:
-            os.system(" ".join(shlex.quote(part) for part in cmd))
-
-
-def run_vscode_mode(
-    resources: ResourceSelection, account: str, timeout: TimeoutSelection, dry_run: bool
-) -> None:
-    proc, job_id = start_allocation_background(
-        gpus=resources.gpus,
-        cpus=resources.cpus,
-        time_str=resources.time_str,
-        account=account,
-        mem=resources.mem_str,
-        job_name="slurmcli-vscode",
-        partition=resources.partition,
-    )
-    print("Starting allocation in the background for VS Code…")
-    assert job_id is not None, "srun command failed"
-
-    node = wait_for_node(job_id, timeout.limit_seconds)
-
-    if not node:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-        if timeout.mode == TIMEOUT_NOTIFY:
-            notify_batch_fallback(
-                resources,
-                account,
-                timeout.email,
-                "slurmcli-vscode",
-                dry_run,
-                "Allocation did not start within the timeout limit. Submitting a batch job to notify you when it begins...",
-            )
-            return
-        print(f"Timed out waiting for a compute node for job {job_id}.")
-        sys.exit(4)
-    print(f"Allocated node: {node}\nJob id: {job_id}")
-    open_vscode_on_host(node)
-    print_release_instructions(job_id)
-
-
 def _skip_search_confirmation(assume_yes: bool) -> bool:
     return assume_yes or not sys.stdin.isatty()
 
@@ -873,87 +723,12 @@ def run_search_mode(
     _submit_and_report(selection=selection, probes=probes, assume_yes=assume_yes)
 
 
-def wait_for_node(job_id: str, timeout_seconds: int) -> Optional[str]:
-    assert timeout_seconds > 0, "timeout_seconds must be positive"
-    total_wait = timeout_seconds
-    deadline = time.time() + total_wait
-    while time.time() < deadline:
-        node = get_node_for_job(job_id)
-        if node:
-            return node
-        time.sleep(0.5)
-    return None
-
-
-def print_cmd(cmd: list, dry_run: bool) -> None:
-    if dry_run:
-        pretty = " ".join(shlex.quote(part) for part in cmd)
-        print(pretty)
-
-
-def notify_batch_fallback(
-    resources: ResourceSelection,
-    account: str,
-    email: str,
-    job_name: str,
-    dry_run: bool,
-    message: str,
-) -> None:
-    sbatch_cmd = build_sbatch(
-        gpus=resources.gpus,
-        cpus=resources.cpus,
-        time_str=resources.time_str,
-        account=account,
-        mem=resources.mem_str,
-        email=email,
-        job_name=job_name,
-        partition=resources.partition,
-    )
-    if dry_run:
-        print(message)
-        print(" ".join(shlex.quote(part) for part in sbatch_cmd))
-        return
-    print(message)
-    print("Submitting batch job that will notify you when the allocation begins…")
-    job_id = submit_batch_job(
-        gpus=resources.gpus,
-        cpus=resources.cpus,
-        time_str=resources.time_str,
-        account=account,
-        mem=resources.mem_str,
-        email=email,
-        job_name=job_name,
-        partition=resources.partition,
-    )
-    if not job_id:
-        print("ERROR: sbatch submission failed.")
-        sys.exit(3)
-    print(f"Submitted batch job: {job_id}")
-    print_release_instructions(job_id, batch=True)
-
-
-def confirm(cmd: list) -> bool:
-    pretty = " ".join(shlex.quote(part) for part in cmd)
-    print("\nAbout to run:\n  " + pretty)
-    ans = safe_cli_text(input("Proceed? [Y/n]: "))
-    ans = "" if ans is None else ans.lower()
-    return ans in ("", "y", "yes")
-
-
 def prompt_account_description(account_id: str) -> str:
     while True:
         value = safe_cli_text(input(f"Description for account {account_id}: "))
         if value:
             return value
         print("Description is required.")
-
-
-def prompt_email() -> str:
-    while True:
-        value = safe_cli_text(input("Notify email: "))
-        if value:
-            return value
-        print("Email is required for notify mode.")
 
 
 def cancel() -> NoReturn:
@@ -964,43 +739,6 @@ def cancel() -> NoReturn:
 def fail(message: str) -> NoReturn:
     print(message)
     sys.exit(2)
-
-
-def _save_launch_defaults(
-    cfg: Config,
-    resources: ResourceSelection,
-    ui_mode: str,
-    timeout: TimeoutSelection,
-) -> None:
-    cfg.last_time = resources.time_str
-    cfg.last_mem = resources.mem_str
-    cfg.last_gpus = resources.gpus
-    cfg.last_cpus = resources.cpus
-    cfg.last_ui = ui_mode
-    cfg.last_timeout_mode = timeout.mode
-    cfg.last_notify_email = timeout.email or cfg.last_notify_email
-    cfg.last_timeout_limit_seconds = timeout.limit_seconds
-    cfg.save()
-
-
-def run_launch_command(args: argparse.Namespace) -> None:
-    cfg = Config.load()
-    account_entry = resolve_account(args=args, cfg=cfg, persist_selection=True)
-    resources = resolve_resources(args, cfg)
-    ui_mode = resolve_ui_mode(args, cfg)
-    timeout = resolve_timeout(args, cfg, ui_mode)
-    _save_launch_defaults(
-        cfg=cfg,
-        resources=resources,
-        ui_mode=ui_mode,
-        timeout=timeout,
-    )
-    if ui_mode == UI_TERMINAL:
-        run_terminal_mode(
-            resources, account_entry["account"], args.shell, timeout, args.dry_run
-        )
-    else:
-        run_vscode_mode(resources, account_entry["account"], timeout, args.dry_run)
 
 
 def _save_search_defaults(cfg: Config, selection: SearchSelection) -> None:
@@ -1044,6 +782,16 @@ def run_dash_command(args: argparse.Namespace) -> None:
     if not user_name:
         print("ERROR: USER is not set.")
         sys.exit(2)
-    exit_code = run_dash_dashboard(user_name=user_name, editor_command=editor_command)
-    if exit_code != 0:
-        sys.exit(exit_code)
+    next_status_message: Optional[str] = None
+    while True:
+        dashboard_result = run_dash_dashboard(
+            user_name=user_name,
+            editor_command=editor_command,
+            initial_status_message=next_status_message,
+        )
+        if dashboard_result.action == "quit":
+            return
+        launch_result = run_dashboard_launch_flow(
+            args=build_default_launch_namespace(),
+        )
+        next_status_message = launch_result.message

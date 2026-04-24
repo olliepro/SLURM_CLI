@@ -58,6 +58,7 @@ class Config:
     last_mem: Optional[str] = None
     last_gpus: Optional[int] = None
     last_cpus: Optional[int] = None
+    last_partition: Optional[str] = None
     last_ui: Optional[str] = None
     last_timeout_mode: Optional[str] = None
     last_notify_email: Optional[str] = None
@@ -75,11 +76,14 @@ class Config:
                     data = json.load(handle)
                 cfg = cls()
                 cfg.last_account = data.get("last_account")
-                cfg.recent_accounts = _normalize_recent_accounts(data.get("recent_accounts"))
+                cfg.recent_accounts = _normalize_recent_accounts(
+                    data.get("recent_accounts")
+                )
                 cfg.last_time = data.get("last_time")
                 cfg.last_mem = data.get("last_mem")
                 cfg.last_gpus = data.get("last_gpus")
                 cfg.last_cpus = data.get("last_cpus")
+                cfg.last_partition = data.get("last_partition")
                 cfg.last_ui = data.get("last_ui")
                 cfg.last_timeout_mode = data.get("last_timeout_mode")
                 cfg.last_notify_email = data.get("last_notify_email")
@@ -122,7 +126,9 @@ def record_account_use(cfg: Config, entry: Dict[str, Any]) -> None:
         "label": label,
         "last_used": time.time(),
     }
-    filtered = [item for item in cfg.recent_accounts if item.get("account") != account_id]
+    filtered = [
+        item for item in cfg.recent_accounts if item.get("account") != account_id
+    ]
     cfg.recent_accounts = [snapshot] + filtered[: MAX_RECENT_ACCOUNTS - 1]
 
 

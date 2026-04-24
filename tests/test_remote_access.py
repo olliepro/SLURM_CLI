@@ -36,7 +36,9 @@ class RemoteAccessTests(unittest.TestCase):
 
     @patch("slurm_cli.remote_access.shutil.which")
     def test_resolve_editor_command_uses_auto_detect(self, which_mock) -> None:
-        which_mock.side_effect = lambda token: "/usr/bin/cursor" if token == "cursor" else None
+        which_mock.side_effect = lambda token: (
+            "/usr/bin/cursor" if token == "cursor" else None
+        )
         with patch.dict("os.environ", {}, clear=True):
             resolved = resolve_editor_command(preferred=None)
         assert resolved is not None

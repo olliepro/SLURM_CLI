@@ -13,6 +13,7 @@ class ConfigStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._with_temp_config(tmpdir)
             cfg = config_store.Config(
+                last_partition="debug",
                 last_search_max_time_minutes=240,
                 last_search_min_time_minutes=30,
                 last_search_max_gpus=4,
@@ -20,6 +21,7 @@ class ConfigStoreTests(unittest.TestCase):
             )
             cfg.save()
             loaded = config_store.Config.load()
+            self.assertEqual(loaded.last_partition, "debug")
             self.assertEqual(loaded.last_search_max_time_minutes, 240)
             self.assertEqual(loaded.last_search_min_time_minutes, 30)
             self.assertEqual(loaded.last_search_max_gpus, 4)

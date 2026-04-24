@@ -5,12 +5,12 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
+from slurm_cli.launch_flow import run_launch_command
 from slurm_cli.interactive_slurm import (
     parse_dash_args,
     parse_launch_args,
     parse_search_args,
     run_dash_command,
-    run_launch_command,
     run_search_command,
 )
 from slurm_cli.remote_access import (

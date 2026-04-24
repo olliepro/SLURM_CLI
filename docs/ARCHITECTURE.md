@@ -4,7 +4,9 @@
 
 - `cli.py`: `gpu` command router (`launch/search/dash/remote`).
 - `interactive_slurm.py`: launch/search/dash resource resolution and execution flows.
+- `launch_flow.py`: shared launch workflow used by both `gpu launch` and dashboard-triggered launches.
 - `dash_ui.py`: curses dashboard rendering and key handling.
+- `dashboard_forecast.py`: forecast panel rendering helpers and chart annotations for the dashboard.
 - `dash_logic.py`: Slurm job fetch/cancel/join action helpers.
 - `remote_access.py`: shared direct remote-open API with editor CLI selection.
 - `forecast_core.py`: Slurm parsing and forecast time-series computation.
@@ -33,6 +35,8 @@
 3. actions:
    - cancel via `scancel`
    - join via `remote_access.open_remote_target`
+   - relocate to another OSC login cluster via `remote_access.open_remote_target`
+   - relaunch a dashboard-specific batch-submit workflow via the shared launch-flow module
 
 ### `gpu remote`
 

@@ -46,11 +46,14 @@ gpu remote --help
 gpu dash
 ```
 
-This opens the launch flow (same as `gpu launch`).
+This opens the live dashboard. Press `n` inside the dashboard to choose an
+account and resources, submit a held batch allocation in the background, and
+then return to the dashboard immediately. Press `r` to relocate your remote
+editor to another OSC login cluster without closing the dashboard.
 
 ## Commands
 
-- `gpu dash`: curses dashboard for pending/running jobs with cancel/join actions.
+- `gpu dash`: curses dashboard for pending/running jobs with ETA, cancel/join/relocate actions, forecast panels, and an in-dashboard launch shortcut.
 - `gpu search`: submits two-phase probe jobs (`sbatch`) for time/GPU exploration.
 - `gpu remote <host>`: open remote vscode (or other vscode fork) editor on login/compute nodes (**requires SSH config**); supports OSC aliases, e.g. `gpu remote ascend` or `gpu remote c0231`.
 - `gpu launch`: interactive allocation launcher.

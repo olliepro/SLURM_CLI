@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
+from slurm_cli.format_utils import format_hours_minutes_compact
 from slurm_cli.remote_access import (
     RemoteOpenRequest,
     open_remote_target,
@@ -12,8 +14,83 @@ from slurm_cli.remote_access import (
 
 DASH_RUNNING = "R"
 DASH_PENDING = "PD"
-DASH_SQUEUE_FORMAT = "%i\t%t\t%j\t%M\t%L\t%R\t%N\t%Z"
+DASH_SQUEUE_FORMAT = "%i\t%t\t%j\t%M\t%L\t%S\t%R\t%N\t%Z"
 BLAME_SQUEUE_FORMAT = "%u|%a|%b|%D|%l|%t"
+UNKNOWN_START_VALUES = {"", "N/A", "Unknown", "None", "(null)"}
+
+
+@dataclass(frozen=True)
+class DashTableLayout:
+    """Column layout used to render dashboard job tables.
+
+    Inputs:
+    - Total available row width after selection/focus prefixes.
+
+    Outputs:
+    - Immutable column widths plus aligned header/render helpers.
+    """
+
+    name_width: int
+    reason_width: int
+    node_width: int
+    job_id_width: int = 8
+    state_width: int = 2
+    time_used_width: int = 8
+    time_left_width: int = 8
+    eta_width: int = 6
+
+    @classmethod
+    def from_width(cls, total_width: int) -> "DashTableLayout":
+        """Build a best-effort layout for one available row width."""
+
+        fixed_width = 39
+        flexible_extra = max(0, total_width - fixed_width - 20)
+        name_width = 8 + (flexible_extra // 2)
+        reason_width = 6 + (flexible_extra // 4)
+        node_width = 6 + flexible_extra - (flexible_extra // 2) - (flexible_extra // 4)
+        return cls(
+            name_width=name_width,
+            reason_width=reason_width,
+            node_width=node_width,
+        )
+
+    def header_row(self) -> str:
+        """Return the aligned dashboard header row."""
+
+        return " ".join(
+            [
+                f"{'JOBID':>{self.job_id_width}}",
+                f"{'ST':<{self.state_width}}",
+                _clip_text(text="NAME", width=self.name_width, align="left"),
+                f"{'USED':>{self.time_used_width}}",
+                f"{'LEFT':>{self.time_left_width}}",
+                f"{'ETA':>{self.eta_width}}",
+                _clip_text(text="REASON", width=self.reason_width, align="left"),
+                _clip_text(text="NODE", width=self.node_width, align="left"),
+            ]
+        )
+
+    def render_job(self, job: "DashJob", as_of: datetime | None) -> str:
+        """Return one aligned job row for the dashboard table."""
+
+        return " ".join(
+            [
+                f"{job.job_id:>{self.job_id_width}}",
+                f"{job.state_compact:<{self.state_width}}",
+                _clip_text(text=job.name, width=self.name_width, align="left"),
+                _clip_text(
+                    text=job.time_used, width=self.time_used_width, align="right"
+                ),
+                _clip_text(
+                    text=job.time_left, width=self.time_left_width, align="right"
+                ),
+                _clip_text(
+                    text=job.eta_text(as_of=as_of), width=self.eta_width, align="right"
+                ),
+                _clip_text(text=job.reason, width=self.reason_width, align="left"),
+                _clip_text(text=job.node_list, width=self.node_width, align="left"),
+            ]
+        )
 
 
 @dataclass(frozen=True)
@@ -26,6 +103,7 @@ class DashJob:
         name: Slurm job name.
         time_used: Elapsed runtime string.
         time_left: Remaining time string.
+        start_time: Slurm actual/expected start time when available.
         reason: Pending/running reason field.
         node_list: NodeList string from Slurm.
         work_dir: Slurm working directory.
@@ -43,6 +121,7 @@ class DashJob:
     name: str
     time_used: str
     time_left: str
+    start_time: datetime | None
     reason: str
     node_list: str
     work_dir: str
@@ -57,14 +136,23 @@ class DashJob:
 
         return self.state_compact == DASH_PENDING
 
-    def display_row(self) -> str:
-        """Render a compact row string for terminal dashboard views."""
+    def eta_text(self, as_of: datetime | None) -> str:
+        """Return the canonical start ETA text from one refresh timestamp.
 
-        return (
-            f"{self.job_id:>8} {self.state_compact:<2} {self.name[:22]:<22} "
-            f"{self.time_used:>9} {self.time_left:>10} "
-            f"{self.reason[:18]:<18} {self.node_list[:16]:<16}"
-        )
+        Inputs:
+        - `as_of`: refresh timestamp used as the ETA reference point.
+
+        Outputs:
+        - `0h00m` for running jobs, `--` when start time is unknown, else a
+          compact hours/minutes offset clamped at zero.
+        """
+
+        if self.is_running():
+            return format_hours_minutes_compact(total_minutes=0)
+        if as_of is None or self.start_time is None:
+            return "--"
+        delta_minutes = int(max(0.0, (self.start_time - as_of).total_seconds()) // 60)
+        return format_hours_minutes_compact(total_minutes=delta_minutes)
 
 
 @dataclass(frozen=True)
@@ -259,8 +347,8 @@ def _parse_jobs(output: str) -> List[DashJob]:
 
 
 def _parse_dash_line(raw_line: str) -> Optional[DashJob]:
-    pieces = raw_line.split("\t", maxsplit=7)
-    if len(pieces) != 8:
+    pieces = raw_line.split("\t", maxsplit=8)
+    if len(pieces) != 9:
         return None
     state = pieces[1].strip()
     if state not in (DASH_PENDING, DASH_RUNNING):
@@ -271,9 +359,10 @@ def _parse_dash_line(raw_line: str) -> Optional[DashJob]:
         name=pieces[2].strip(),
         time_used=pieces[3].strip(),
         time_left=pieces[4].strip(),
-        reason=pieces[5].strip(),
-        node_list=pieces[6].strip(),
-        work_dir=pieces[7].strip(),
+        start_time=_parse_dash_start_time(value=pieces[5].strip()),
+        reason=pieces[6].strip(),
+        node_list=pieces[7].strip(),
+        work_dir=pieces[8].strip(),
     )
 
 
@@ -320,6 +409,26 @@ def _result_message(proc: subprocess.CompletedProcess[str]) -> str:
     if proc.returncode == 0:
         return "Command succeeded"
     return f"Command failed with code {proc.returncode}"
+
+
+def _parse_dash_start_time(value: str) -> datetime | None:
+    """Parse one `squeue %S` timestamp into a local datetime."""
+
+    if value in UNKNOWN_START_VALUES:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _clip_text(text: str, width: int, align: str) -> str:
+    """Return one field clipped and padded to a target width."""
+
+    if width <= 0:
+        return ""
+    trimmed = text[:width]
+    return f"{trimmed:<{width}}" if align == "left" else f"{trimmed:>{width}}"
 
 
 def _parse_blame_output(output: str) -> List[BlameRecord]:

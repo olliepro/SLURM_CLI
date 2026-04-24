@@ -123,7 +123,9 @@ class SearchBoundsPicker:
                 continue
             minutes = parse_time_string(value)
             if minutes is None or minutes > self.max_time_minutes:
-                print(f"Min time must be <= {minutes_to_slurm_time(self.max_time_minutes)}.")
+                print(
+                    f"Min time must be <= {minutes_to_slurm_time(self.max_time_minutes)}."
+                )
                 continue
             if minutes < SEARCH_DEFAULT_MIN_TIME_MINUTES:
                 print("Min time must be at least 00:30:00.")
@@ -166,16 +168,16 @@ class SearchBoundsPicker:
     def _draw_bounds_screen(self, stdscr) -> None:
         stdscr.clear()
         _center_text(stdscr, 2, "Search Bounds", curses.A_BOLD)
-        max_text = (
-            f"Max: {format_minutes_phrase(self.max_time_minutes)} | GPUs: {self.max_gpus}"
-        )
+        max_text = f"Max: {format_minutes_phrase(self.max_time_minutes)} | GPUs: {self.max_gpus}"
         _center_text(stdscr, 4, max_text, curses.A_DIM)
         rows = [
             ("Min Time", format_minutes_phrase(self.time_options[self.min_time_idx])),
             ("Min GPUs", str(self.min_gpus)),
         ]
         for idx, (label, value) in enumerate(rows):
-            attr = curses.A_REVERSE | curses.A_BOLD if idx == self.focus else curses.A_BOLD
+            attr = (
+                curses.A_REVERSE | curses.A_BOLD if idx == self.focus else curses.A_BOLD
+            )
             _center_text(stdscr, 7 + idx * 2, f"{label}: {value}", attr)
         _center_text(
             stdscr,
@@ -306,7 +308,9 @@ class SearchSubmissionDashboard:
         self.probes = list(probes)
         self.job_prefix = job_prefix
         self.rows = [probe.summary_line(prefix=job_prefix) for probe in self.probes]
-        self.results: List[Optional["SearchSubmissionResult"]] = [None] * len(self.probes)
+        self.results: List[Optional["SearchSubmissionResult"]] = [None] * len(
+            self.probes
+        )
         self.close_after_seconds = max(1, int(close_after_seconds))
         self.was_canceled = False
 
@@ -381,7 +385,9 @@ class SearchSubmissionDashboard:
                 stdscr.addstr(y, 2, text[: max(1, width - 4)], attr)
             except curses.error:
                 continue
-        footer = self._footer_text(complete=complete, remaining_seconds=remaining_seconds)
+        footer = self._footer_text(
+            complete=complete, remaining_seconds=remaining_seconds
+        )
         try:
             _center_text(stdscr, height - 1, footer, curses.A_DIM | curses.A_BOLD)
         except curses.error:

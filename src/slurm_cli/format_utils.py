@@ -5,7 +5,9 @@ import string
 import time
 from typing import Iterable, List, Optional
 
-ALLOWED_TEXT_CHARS = set(string.ascii_letters + string.digits + string.punctuation + " ")
+ALLOWED_TEXT_CHARS = set(
+    string.ascii_letters + string.digits + string.punctuation + " "
+)
 _MEM_RE = re.compile(r"^\s*(\d+)\s*([KMG]?)\s*$", re.IGNORECASE)
 
 
@@ -55,6 +57,25 @@ def format_minutes_phrase(minutes: int) -> str:
     hours, mins = divmod(rem, 60)
     units = ((days, "d"), (hours, "h"), (mins, "m"))
     return _format_units(units)
+
+
+def format_hours_minutes_compact(total_minutes: int) -> str:
+    """Return a fixed-width compact `HhMMm` representation.
+
+    Inputs:
+    - `total_minutes`: duration in minutes.
+
+    Outputs:
+    - Canonical compact string such as `0h00m` or `3h07m`.
+
+    Example:
+        >>> format_hours_minutes_compact(total_minutes=67)
+        '1h07m'
+    """
+
+    minutes = max(0, int(total_minutes))
+    hours, rem_minutes = divmod(minutes, 60)
+    return f"{hours}h{rem_minutes:02d}m"
 
 
 def format_seconds_phrase(seconds: int) -> str:
@@ -144,7 +165,27 @@ def build_memory_options() -> List[int]:
     values.extend(range(144, 257, 16))
     values.extend(range(288, 513, 32))
     values.extend(range(576, 1025, 64))
-    nice = {32, 40, 48, 50, 64, 80, 96, 128, 160, 192, 224, 256, 320, 384, 512, 640, 768, 896, 1024}
+    nice = {
+        32,
+        40,
+        48,
+        50,
+        64,
+        80,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        320,
+        384,
+        512,
+        640,
+        768,
+        896,
+        1024,
+    }
     values.extend(nice)
     return sorted({min(1024, max(1, val)) for val in values})
 

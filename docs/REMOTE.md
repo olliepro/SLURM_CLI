@@ -69,4 +69,4 @@ Editor command resolution order:
 
 ## Dash Integration
 
-Inside `gpu dash`, pressing `v` on a running job calls the same remote API.
+Inside `gpu dash`, pressing `v` on a running job calls the same remote API and keeps the dashboard open. Pressing `r` opens a full-screen picker for the other OSC login clusters and relocates the remote editor there without closing the dashboard. Escape returns from the picker to the dashboard.

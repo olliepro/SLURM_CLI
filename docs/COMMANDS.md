@@ -39,9 +39,10 @@ Keyboard actions in curses mode:
 - `space`: select focused job
 - `a`: toggle all
 - `c`: cancel selected/focused jobs
-- `v`: join focused running job via remote open
-- `r`: refresh
-- `q`: quit
+- `v`: join focused running job via remote open without leaving the dashboard
+- `n`: choose account/resources, submit a held batch allocation, and return to the dashboard
+- `r`: relocate remote editor to another OSC login cluster; Escape returns to the dashboard from this picker
+- `q` or Escape: quit
 
 Examples:
 

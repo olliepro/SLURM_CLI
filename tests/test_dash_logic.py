@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from slurm_cli.dash_logic import (  # noqa: E402
@@ -20,16 +21,22 @@ class DashLogicTests(unittest.TestCase):
     @patch("slurm_cli.dash_logic.subprocess.check_output")
     def test_fetch_dash_jobs_parses_and_sorts(self, check_output_mock) -> None:
         check_output_mock.return_value = (
-            "100\tPD\tpending\t0:00\t1:00\tPriority\t\t/work/p\n"
-            "101\tR\trunning\t0:10\t0:50\tNone\tc0318\t/work/r\n"
+            "100\tPD\tpending\t0:00\t1:00\t2026-02-11T10:15:00\tPriority\t\t/work/p\n"
+            "101\tR\trunning\t0:10\t0:50\t2026-02-11T09:00:00\tNone\tc0318\t/work/r\n"
         )
         jobs = fetch_dash_jobs(user_name="testuser")
         self.assertEqual([job.job_id for job in jobs], ["101", "100"])
         self.assertEqual(jobs[0].state_compact, DASH_RUNNING)
         self.assertEqual(jobs[1].state_compact, DASH_PENDING)
+        self.assertEqual(
+            jobs[1].eta_text(as_of=datetime(2026, 2, 11, 9, 0, 0)),
+            "1h15m",
+        )
 
     @patch("slurm_cli.dash_logic.subprocess.check_output")
-    def test_resolve_primary_host_expands_bracket_nodelist(self, check_output_mock) -> None:
+    def test_resolve_primary_host_expands_bracket_nodelist(
+        self, check_output_mock
+    ) -> None:
         check_output_mock.return_value = "c0821\nc0822\n"
         host = resolve_primary_host(node_list="c[0821-0822]")
         self.assertEqual(host, "c0821")
@@ -56,7 +63,9 @@ class DashLogicTests(unittest.TestCase):
 
     @patch("slurm_cli.dash_logic.open_remote_target")
     @patch("slurm_cli.dash_logic.resolve_primary_host")
-    def test_join_job_via_remote_calls_shared_remote_api(self, host_mock, remote_mock) -> None:
+    def test_join_job_via_remote_calls_shared_remote_api(
+        self, host_mock, remote_mock
+    ) -> None:
         host_mock.return_value = "c0318"
         remote_mock.return_value = RemoteOpenResult(
             ok=True,
@@ -69,6 +78,7 @@ class DashLogicTests(unittest.TestCase):
             name="demo",
             time_used="0:10",
             time_left="0:50",
+            start_time=datetime(2026, 2, 11, 9, 0, 0),
             reason="None",
             node_list="c0318",
             work_dir="workspace",
@@ -88,6 +98,7 @@ class DashLogicTests(unittest.TestCase):
             name="demo",
             time_used="0:00",
             time_left="1:00",
+            start_time=None,
             reason="Priority",
             node_list="",
             work_dir="",

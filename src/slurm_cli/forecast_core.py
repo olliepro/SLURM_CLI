@@ -35,26 +35,7 @@ UNAVAILABLE_AVAILABILITY_STATES = {"MAINTENANCE", "DRAIN"}
 
 @dataclass(frozen=True)
 class JobRecord:
-    """Parsed Slurm job fields needed for usage forecasting.
-
-    Inputs:
-    - `job_id`: Slurm job identifier.
-    - `state`: Slurm state text (`RUNNING` or `PENDING`).
-    - `requested_gpus`: requested GPU count from `ReqTRES`.
-    - `allocated_gpus`: allocated GPU count from `AllocTRES`.
-    - `start_time`: scheduler start-time estimate, if known.
-    - `end_time`: scheduler end-time estimate, if known.
-    - `time_limit_hours`: requested walltime in hours.
-    - `run_time_hours`: elapsed runtime in hours.
-    - `requested_cpus`: total requested CPUs.
-    - `requested_mem_mib`: total requested memory in MiB.
-    - `requested_nodes`: total requested node count.
-    - `node_expression`: node expression used for occupancy placement.
-    - `partition_names`: normalized partition names from job metadata.
-
-    Outputs:
-    - Immutable job record for conversion into forecast windows.
-    """
+    """Parsed Slurm job fields needed for usage forecasting."""
 
     job_id: int
     state: str
@@ -69,29 +50,30 @@ class JobRecord:
     requested_nodes: int
     node_expression: str | None
     partition_names: tuple[str, ...]
+    task_count: int = 1
 
     def projected_gpus(self) -> int:
-        """Return GPU count to use in forecast calculations."""
+        """Return total GPU count represented by this record.
 
+        Inputs:
+        - Per-task GPU counts from requested or allocated TRES.
+        - `task_count` when one pending array record represents many tasks.
+
+        Outputs:
+        - Total GPUs to reserve in forecast calculations for this record.
+        """
+
+        per_task_gpus = self.requested_gpus
         if self.state == "RUNNING":
-            return self.allocated_gpus if self.allocated_gpus > 0 else self.requested_gpus
-        return self.requested_gpus
+            per_task_gpus = (
+                self.allocated_gpus if self.allocated_gpus > 0 else self.requested_gpus
+            )
+        return per_task_gpus * self.task_count
 
 
 @dataclass(frozen=True)
 class JobWindow:
-    """Forecastable GPU occupancy interval for one job.
-
-    Inputs:
-    - `job_id`: Slurm job identifier.
-    - `state`: `RUNNING` or `PENDING`.
-    - `gpus`: projected GPU occupancy.
-    - `start`: interval start timestamp.
-    - `end`: interval end timestamp.
-
-    Outputs:
-    - Closed-open occupancy interval `[start, end)`.
-    """
+    """Forecastable closed-open GPU occupancy interval for one job."""
 
     job_id: int
     state: str
@@ -102,21 +84,7 @@ class JobWindow:
 
 @dataclass(frozen=True)
 class NodeCapacity:
-    """Node-level capacity values needed for degenerate-job detection.
-
-    Inputs:
-    - `node_name`: host name.
-    - `cpu`: schedulable CPUs from `CfgTRES`.
-    - `mem_mib`: schedulable memory from `CfgTRES`, in MiB.
-    - `gpus`: schedulable GPUs from `CfgTRES`.
-    - `cpu_alloc`: allocated CPUs on node.
-    - `mem_alloc_mib`: allocated memory on node, in MiB.
-    - `gpu_alloc`: allocated GPUs on node.
-    - `partition_names`: normalized partition names hosting this node.
-
-    Outputs:
-    - Immutable per-node capacity object.
-    """
+    """Node-level capacity values needed for degenerate-job detection."""
 
     node_name: str
     cpu: int
@@ -131,14 +99,7 @@ class NodeCapacity:
 
 @dataclass(frozen=True)
 class ForecastStats:
-    """Summary counters for forecast coverage and exclusions.
-
-    Inputs:
-    - Totals of active GPU jobs and known/unknown pending-start jobs.
-
-    Outputs:
-    - Structured summary for titles, logs, and plot annotations.
-    """
+    """Summary counters for forecast coverage and exclusions."""
 
     active_gpu_jobs: int
     running_gpu_jobs: int
@@ -255,7 +216,9 @@ def parse_gpu_count(tres_text: str) -> int:
     generic_match = re.search(pattern=r"(?:^|,)gres/gpu=(\d+)", string=tres_text)
     if generic_match is not None:
         return int(generic_match.group(1))
-    model_matches = re.findall(pattern=r"(?:^|,)gres/gpu:[^=,]+=(\d+)", string=tres_text)
+    model_matches = re.findall(
+        pattern=r"(?:^|,)gres/gpu:[^=,]+=(\d+)", string=tres_text
+    )
     return sum(int(match_text) for match_text in model_matches)
 
 
@@ -284,7 +247,9 @@ def size_to_mib(number_text: str, unit: str) -> int:
 def parse_tres_mem_mib(tres_text: str) -> int:
     """Read memory TRES value as MiB."""
 
-    match = re.search(pattern=r"(?:^|,)mem=([0-9]+(?:\.[0-9]+)?)([KMGTP]?)", string=tres_text)
+    match = re.search(
+        pattern=r"(?:^|,)mem=([0-9]+(?:\.[0-9]+)?)([KMGTP]?)", string=tres_text
+    )
     if match is None:
         return 0
     return size_to_mib(number_text=match.group(1), unit=match.group(2))
@@ -293,7 +258,11 @@ def parse_tres_mem_mib(tres_text: str) -> int:
 def infer_node_expression(state: str, fields: dict[str, str]) -> str | None:
     """Select node expression source by job state."""
 
-    keys = ("NodeList", "SchedNodeList") if state == "RUNNING" else ("SchedNodeList", "NodeList")
+    keys = (
+        ("NodeList", "SchedNodeList")
+        if state == "RUNNING"
+        else ("SchedNodeList", "NodeList")
+    )
     for key in keys:
         value = fields.get(key, "")
         if value not in NONE_VALUES:
@@ -311,41 +280,116 @@ def infer_requested_nodes(fields: dict[str, str]) -> int:
     return int(match.group(0)) if match is not None else 1
 
 
+def parse_job_id(job_id_text: str) -> int | None:
+    """Parse a numeric Slurm job id from raw `JobId` text.
+
+    Inputs:
+    - `job_id_text`: raw Slurm `JobId` field.
+
+    Outputs:
+    - Numeric job id when present, else `None`.
+
+    Example:
+    - `parse_job_id(job_id_text="12345_7") == 12345`
+    """
+
+    match = re.match(pattern=r"\d+", string=job_id_text)
+    return int(match.group(0)) if match is not None else None
+
+
+def parse_array_task_count(array_task_text: str) -> int:
+    """Return how many array tasks are represented by one Slurm record.
+
+    Inputs:
+    - `array_task_text`: raw `ArrayTaskId` value such as `27`, `0-7`, or `0-15:4%2`.
+
+    Outputs:
+    - Positive task count represented by the record.
+
+    Example:
+    - `parse_array_task_count(array_task_text="0-15:4%2") == 4`
+    """
+
+    if array_task_text in NONE_VALUES:
+        return 1
+    expression = array_task_text.split("%", 1)[0].strip()
+    if not expression:
+        return 1
+    total_tasks = 0
+    for raw_chunk in expression.split(","):
+        chunk = raw_chunk.strip()
+        if not chunk:
+            continue
+        if "-" not in chunk:
+            assert chunk.isdigit(), f"Unsupported array task token: {array_task_text}"
+            total_tasks += 1
+            continue
+        start_text, end_text = chunk.split("-", 1)
+        step = 1
+        if ":" in end_text:
+            end_text, step_text = end_text.split(":", 1)
+            assert (
+                step_text.isdigit()
+            ), f"Unsupported array task step: {array_task_text}"
+            step = int(step_text)
+        assert (
+            start_text.isdigit() and end_text.isdigit()
+        ), f"Unsupported array task range: {array_task_text}"
+        start_idx = int(start_text)
+        end_idx = int(end_text)
+        assert end_idx >= start_idx, f"Descending array task range: {array_task_text}"
+        assert step > 0, f"Non-positive array task step: {array_task_text}"
+        total_tasks += ((end_idx - start_idx) // step) + 1
+    return max(total_tasks, 1)
+
+
 def parse_job_record(fields: dict[str, str]) -> JobRecord | None:
     """Build a `JobRecord` when the job is active and requests GPUs."""
 
     state = fields.get("JobState", "")
     if state not in ACTIVE_STATES:
         return None
+    job_id = parse_job_id(job_id_text=fields.get("JobId", ""))
+    if job_id is None:
+        return None
     req_tres = fields.get("ReqTRES", "")
     requested_gpus = parse_gpu_count(tres_text=req_tres)
     if requested_gpus <= 0:
         return None
     return JobRecord(
-        job_id=int(fields["JobId"]),
+        job_id=job_id,
         state=state,
         requested_gpus=requested_gpus,
         allocated_gpus=parse_gpu_count(tres_text=fields.get("AllocTRES", "")),
         start_time=parse_datetime(value=fields.get("StartTime", "")),
         end_time=parse_datetime(value=fields.get("EndTime", "")),
-        time_limit_hours=parse_duration_hours(value=fields.get("TimeLimit", "00:00:00")),
+        time_limit_hours=parse_duration_hours(
+            value=fields.get("TimeLimit", "00:00:00")
+        ),
         run_time_hours=parse_duration_hours(value=fields.get("RunTime", "00:00:00")),
         requested_cpus=parse_tres_int(tres_text=req_tres, key="cpu"),
         requested_mem_mib=parse_tres_mem_mib(tres_text=req_tres),
         requested_nodes=infer_requested_nodes(fields=fields),
         node_expression=infer_node_expression(state=state, fields=fields),
         partition_names=parse_partition_names(value=fields.get("Partition", "")),
+        task_count=parse_array_task_count(
+            array_task_text=fields.get("ArrayTaskId", "")
+        ),
     )
 
 
-def window_from_record(record: JobRecord, now: datetime, projected_gpus: int) -> JobWindow | None:
+def window_from_record(
+    record: JobRecord, now: datetime, projected_gpus: int
+) -> JobWindow | None:
     """Convert one `JobRecord` into a future-facing occupancy window."""
 
     if projected_gpus <= 0:
         return None
     if record.state == "RUNNING":
         start = now
-        fallback_end = now + timedelta(hours=max(record.time_limit_hours - record.run_time_hours, 0.0))
+        fallback_end = now + timedelta(
+            hours=max(record.time_limit_hours - record.run_time_hours, 0.0)
+        )
         end = record.end_time if record.end_time is not None else fallback_end
     else:
         if record.start_time is None:
@@ -355,7 +399,13 @@ def window_from_record(record: JobRecord, now: datetime, projected_gpus: int) ->
         end = record.end_time if record.end_time is not None else fallback_end
     if end <= start:
         return None
-    return JobWindow(job_id=record.job_id, state=record.state, gpus=projected_gpus, start=start, end=end)
+    return JobWindow(
+        job_id=record.job_id,
+        state=record.state,
+        gpus=projected_gpus,
+        start=start,
+        end=end,
+    )
 
 
 def parse_node_capacities(raw_nodes: str) -> dict[str, NodeCapacity]:
@@ -388,13 +438,17 @@ def parse_node_capacities(raw_nodes: str) -> dict[str, NodeCapacity]:
                 cpu_alloc=cpu_alloc,
                 mem_alloc_mib=mem_alloc_mib,
                 gpu_alloc=gpu_alloc,
-                partition_names=parse_partition_names(value=fields.get("Partitions", "")),
+                partition_names=parse_partition_names(
+                    value=fields.get("Partitions", "")
+                ),
                 state=fields.get("State", ""),
             )
     return capacities
 
 
-def expand_nodelist(node_expression: str | None, cache: dict[str, list[str]]) -> list[str]:
+def expand_nodelist(
+    node_expression: str | None, cache: dict[str, list[str]]
+) -> list[str]:
     """Expand one Slurm node expression into hostnames."""
 
     if node_expression is None or node_expression in NONE_VALUES:
@@ -403,21 +457,31 @@ def expand_nodelist(node_expression: str | None, cache: dict[str, list[str]]) ->
         return cache[node_expression]
     hosts = [
         host.strip()
-        for host in run_command(command=["scontrol", "show", "hostname", node_expression]).splitlines()
+        for host in run_command(
+            command=["scontrol", "show", "hostname", node_expression]
+        ).splitlines()
         if host.strip()
     ]
     cache[node_expression] = hosts
     return hosts
 
 
-def is_full_node_by_resources(record: JobRecord, capacities: list[NodeCapacity]) -> bool:
+def is_full_node_by_resources(
+    record: JobRecord, capacities: list[NodeCapacity]
+) -> bool:
     """Return true when CPU or memory request effectively consumes full node(s)."""
 
     if not capacities:
         return False
-    node_count = record.requested_nodes if record.requested_nodes > 0 else len(capacities)
-    cpu_per_node = record.requested_cpus / node_count if record.requested_cpus > 0 else 0.0
-    mem_per_node = record.requested_mem_mib / node_count if record.requested_mem_mib > 0 else 0.0
+    node_count = (
+        record.requested_nodes if record.requested_nodes > 0 else len(capacities)
+    )
+    cpu_per_node = (
+        record.requested_cpus / node_count if record.requested_cpus > 0 else 0.0
+    )
+    mem_per_node = (
+        record.requested_mem_mib / node_count if record.requested_mem_mib > 0 else 0.0
+    )
     for capacity in capacities:
         if cpu_per_node >= capacity.cpu:
             return True
@@ -427,11 +491,15 @@ def is_full_node_by_resources(record: JobRecord, capacities: list[NodeCapacity])
 
 
 def adjusted_projected_gpus(
-    record: JobRecord, node_capacities: dict[str, NodeCapacity], host_cache: dict[str, list[str]]
+    record: JobRecord,
+    node_capacities: dict[str, NodeCapacity],
+    host_cache: dict[str, list[str]],
 ) -> tuple[int, bool, int]:
     """Return degenerate-aware projected GPUs and adjustment flags."""
 
     base_gpus = record.projected_gpus()
+    if record.task_count > 1:
+        return base_gpus, False, 0
     hosts = expand_nodelist(node_expression=record.node_expression, cache=host_cache)
     capacities = [node_capacities[host] for host in hosts if host in node_capacities]
     if not capacities:
@@ -466,7 +534,9 @@ def running_jobs_by_node(
         end_time = running_end_time(record=record, now=now)
         if end_time <= now:
             continue
-        hosts = expand_nodelist(node_expression=record.node_expression, cache=host_cache)
+        hosts = expand_nodelist(
+            node_expression=record.node_expression, cache=host_cache
+        )
         for host in hosts:
             if host in node_capacities:
                 mapping[host].append((record.job_id, end_time))
@@ -490,7 +560,9 @@ def degenerate_node_lock_windows(
     lock_windows: list[JobWindow] = []
     degenerate_nodes = 0
     locked_gpus_total = 0
-    mapping = running_jobs_by_node(records=records, node_capacities=node_capacities, now=now)
+    mapping = running_jobs_by_node(
+        records=records, node_capacities=node_capacities, now=now
+    )
     for node_name, jobs in mapping.items():
         capacity = node_capacities[node_name]
         free_gpus = capacity.gpus - capacity.gpu_alloc
@@ -504,7 +576,13 @@ def degenerate_node_lock_windows(
         if unlock_time <= now:
             continue
         lock_windows.append(
-            JobWindow(job_id=-(degenerate_nodes + 1), state="RUNNING_LOCK", gpus=free_gpus, start=now, end=unlock_time)
+            JobWindow(
+                job_id=-(degenerate_nodes + 1),
+                state="RUNNING_LOCK",
+                gpus=free_gpus,
+                start=now,
+                end=unlock_time,
+            )
         )
         degenerate_nodes += 1
         locked_gpus_total += free_gpus
@@ -597,21 +675,7 @@ def collect_job_windows(
     target_partition: str | None = None,
     infer_quad_large_gpu: bool = False,
 ) -> tuple[list[JobWindow], ForecastStats]:
-    """Extract forecast windows and stats from raw Slurm job text.
-
-    Inputs:
-    - `raw_jobs`: output from `scontrol show jobs -o`.
-    - `now`: forecast anchor timestamp.
-    - `node_capacities`: per-node CPU/memory/GPU capacity map.
-    - `target_partition`: optional partition filter for partition-specific forecasting.
-    - `infer_quad_large_gpu`: when true, treat jobs with `requested_gpus > 3` as quad-eligible.
-
-    Outputs:
-    - Tuple of `(windows, stats)`.
-
-    Example:
-    - `collect_job_windows(raw_jobs=run_command([...]), now=datetime.now(), node_capacities=nodes)`
-    """
+    """Extract forecast windows and stats from raw Slurm job text."""
 
     host_cache: dict[str, list[str]] = {}
     records = parse_job_records(raw_jobs=raw_jobs)
@@ -640,21 +704,33 @@ def collect_job_windows(
         if is_degenerate:
             degenerate_jobs += 1
             degenerate_extra_gpus += extra_gpus
-        window = window_from_record(record=record, now=now, projected_gpus=projected_gpus)
+        window = window_from_record(
+            record=record, now=now, projected_gpus=projected_gpus
+        )
         if window is not None:
             windows.append(window)
-    lock_windows, degenerate_nodes, degenerate_locked_gpus = degenerate_node_lock_windows(
-        records=records, node_capacities=active_capacities, now=now
+    lock_windows, degenerate_nodes, degenerate_locked_gpus = (
+        degenerate_node_lock_windows(
+            records=records, node_capacities=active_capacities, now=now
+        )
     )
     windows.extend(lock_windows)
     pending_records = [record for record in records if record.state == "PENDING"]
-    pending_with_start = [record for record in pending_records if record.start_time is not None]
+    pending_with_start = [
+        record for record in pending_records if record.start_time is not None
+    ]
+    active_gpu_jobs = sum(record.task_count for record in records)
+    running_gpu_jobs = sum(
+        record.task_count for record in records if record.state == "RUNNING"
+    )
+    pending_gpu_jobs = sum(record.task_count for record in pending_records)
+    pending_with_start_jobs = sum(record.task_count for record in pending_with_start)
     stats = ForecastStats(
-        active_gpu_jobs=len(records),
-        running_gpu_jobs=sum(1 for record in records if record.state == "RUNNING"),
-        pending_gpu_jobs=len(pending_records),
-        pending_with_start=len(pending_with_start),
-        pending_without_start=len(pending_records) - len(pending_with_start),
+        active_gpu_jobs=active_gpu_jobs,
+        running_gpu_jobs=running_gpu_jobs,
+        pending_gpu_jobs=pending_gpu_jobs,
+        pending_with_start=pending_with_start_jobs,
+        pending_without_start=pending_gpu_jobs - pending_with_start_jobs,
         forecast_windows=len(windows),
         degenerate_jobs=degenerate_jobs,
         degenerate_extra_gpus=degenerate_extra_gpus,
@@ -664,7 +740,9 @@ def collect_job_windows(
     return windows, stats
 
 
-def build_event_deltas(windows: list[JobWindow], now: datetime) -> tuple[int, list[tuple[datetime, int]]]:
+def build_event_deltas(
+    windows: list[JobWindow], now: datetime
+) -> tuple[int, list[tuple[datetime, int]]]:
     """Build baseline usage and future event deltas from forecast windows."""
 
     baseline = 0
@@ -680,7 +758,9 @@ def build_event_deltas(windows: list[JobWindow], now: datetime) -> tuple[int, li
     return baseline, events
 
 
-def group_event_deltas(events: list[tuple[datetime, int]]) -> list[tuple[datetime, int]]:
+def group_event_deltas(
+    events: list[tuple[datetime, int]],
+) -> list[tuple[datetime, int]]:
     """Collapse events sharing identical timestamps."""
 
     grouped: defaultdict[datetime, int] = defaultdict(int)
@@ -689,7 +769,9 @@ def group_event_deltas(events: list[tuple[datetime, int]]) -> list[tuple[datetim
     return sorted(grouped.items(), key=lambda item: item[0])
 
 
-def choose_horizon(windows: list[JobWindow], now: datetime, horizon_hours: float | None) -> datetime:
+def choose_horizon(
+    windows: list[JobWindow], now: datetime, horizon_hours: float | None
+) -> datetime:
     """Return plotting horizon based on CLI cap or latest scheduled end."""
 
     if horizon_hours is not None:
@@ -701,7 +783,10 @@ def choose_horizon(windows: list[JobWindow], now: datetime, horizon_hours: float
 
 
 def build_step_series(
-    now: datetime, baseline: int, grouped_events: list[tuple[datetime, int]], horizon: datetime
+    now: datetime,
+    baseline: int,
+    grouped_events: list[tuple[datetime, int]],
+    horizon: datetime,
 ) -> tuple[list[datetime], list[int]]:
     """Convert baseline+events into stepwise timeseries points."""
 
@@ -750,14 +835,7 @@ def is_unavailable_availability_state(state_text: str) -> bool:
 
 
 def schedulable_gpu_capacity(capacity: NodeCapacity) -> int:
-    """Return schedulable GPU capacity after state-based exclusions.
-
-    Inputs:
-    - `capacity`: parsed node capacity and allocation values.
-
-    Outputs:
-    - GPU capacity count, or zero when the node is drained or in maintenance.
-    """
+    """Return schedulable GPU capacity after state-based exclusions."""
 
     if is_unavailable_availability_state(state_text=capacity.state):
         return 0
@@ -765,14 +843,7 @@ def schedulable_gpu_capacity(capacity: NodeCapacity) -> int:
 
 
 def node_available_gpus(capacity: NodeCapacity) -> int:
-    """Return non-negative currently available GPUs for one node.
-
-    Inputs:
-    - `capacity`: parsed node capacity and allocation values.
-
-    Outputs:
-    - Integer available GPUs on that node at snapshot time.
-    """
+    """Return non-negative currently available GPUs for one node."""
 
     if is_unavailable_availability_state(state_text=capacity.state):
         return 0
@@ -783,39 +854,27 @@ def max_colocated_available_gpus(
     node_capacities: dict[str, NodeCapacity],
     partition_name: str | None = None,
 ) -> int:
-    """Return the largest currently available GPU count on a single node.
-
-    Inputs:
-    - `node_capacities`: full cluster node-capacity mapping.
-    - `partition_name`: optional partition filter.
-
-    Outputs:
-    - Max currently available GPUs on any one node in the selected scope.
-
-    Example:
-    - `max_colocated_available_gpus(node_capacities=nodes, partition_name="quad")`
-    """
+    """Return the largest currently available GPU count on a single node."""
 
     scoped_capacities = (
-        partition_node_capacities(node_capacities=node_capacities, partition_name=partition_name)
+        partition_node_capacities(
+            node_capacities=node_capacities, partition_name=partition_name
+        )
         if partition_name is not None
         else node_capacities
     )
     if not scoped_capacities:
         return 0
-    return max(node_available_gpus(capacity=capacity) for capacity in scoped_capacities.values())
+    return max(
+        node_available_gpus(capacity=capacity)
+        for capacity in scoped_capacities.values()
+    )
 
 
-def partition_gpu_capacity(node_capacities: dict[str, NodeCapacity], partition_name: str) -> int:
-    """Return total GPU capacity hosted by one partition.
-
-    Inputs:
-    - `node_capacities`: full cluster node-capacity mapping.
-    - `partition_name`: partition label to aggregate.
-
-    Outputs:
-    - Sum of schedulable GPUs on nodes in the partition.
-    """
+def partition_gpu_capacity(
+    node_capacities: dict[str, NodeCapacity], partition_name: str
+) -> int:
+    """Return total GPU capacity hosted by one partition."""
 
     partition_nodes = partition_node_capacities(
         node_capacities=node_capacities,
@@ -833,15 +892,22 @@ def format_relative_hours(hours_from_now: float) -> str:
     return f"+{rounded:.1f}h"
 
 
-def build_relative_halfhour_ticks(now: datetime, horizon: datetime) -> tuple[list[datetime], list[str]]:
+def build_relative_halfhour_ticks(
+    now: datetime, horizon: datetime
+) -> tuple[list[datetime], list[str]]:
     """Build half-hour x-ticks from `now` to `horizon` with relative labels."""
 
     assert horizon > now, "Horizon must be after now."
     elapsed_seconds = (horizon - now).total_seconds()
     step_seconds = HALF_HOUR_MINUTES * 60
     full_steps = int(elapsed_seconds // step_seconds)
-    ticks = [now + timedelta(minutes=HALF_HOUR_MINUTES * idx) for idx in range(full_steps + 1)]
-    labels = [format_relative_hours(hours_from_now=0.5 * idx) for idx in range(full_steps + 1)]
+    ticks = [
+        now + timedelta(minutes=HALF_HOUR_MINUTES * idx)
+        for idx in range(full_steps + 1)
+    ]
+    labels = [
+        format_relative_hours(hours_from_now=0.5 * idx) for idx in range(full_steps + 1)
+    ]
     if ticks[-1] < horizon:
         ticks.append(horizon)
         labels.append(format_relative_hours(hours_from_now=elapsed_seconds / 3600.0))
