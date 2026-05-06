@@ -30,15 +30,18 @@ from slurm_cli.forecast_core import (
     build_event_deltas,
     build_step_series,
     collect_job_windows,
+    expand_nodelist,
     filter_records_for_partition,
     group_event_deltas,
     max_colocated_available_gpus,
+    node_available_gpus,
     parse_job_records,
     partition_gpu_capacity,
     partition_node_capacities,
     parse_node_capacities,
     running_end_time,
     run_command,
+    schedulable_gpu_capacity,
     total_gpu_capacity,
 )
 from slurm_cli.format_utils import format_hours_minutes_compact
@@ -505,7 +508,7 @@ def debug_marker_from_records(
     if not scoped_capacities:
         return None
     current_available = sum(
-        max(capacity.gpus - capacity.gpu_alloc, 0)
+        node_available_gpus(capacity=capacity)
         for capacity in scoped_capacities.values()
     )
     if current_available >= 1:
@@ -514,6 +517,12 @@ def debug_marker_from_records(
             offset_minutes=0,
             available_gpus=current_available,
         )
+    schedulable_node_names = {
+        node_name
+        for node_name, capacity in scoped_capacities.items()
+        if schedulable_gpu_capacity(capacity=capacity) > 0
+    }
+    release_host_cache: dict[str, list[str]] = {}
     scoped_records = filter_records_for_partition(
         records=list(records),
         partition_name=partition_name,
@@ -525,6 +534,11 @@ def debug_marker_from_records(
         record
         for record in scoped_records
         if record.state == "RUNNING" and record.projected_gpus() > 0
+        and record_releases_schedulable_node(
+            record=record,
+            schedulable_node_names=schedulable_node_names,
+            host_cache=release_host_cache,
+        )
     ]
     if not running_records:
         return None
@@ -544,6 +558,19 @@ def debug_marker_from_records(
         offset_minutes=offset_minutes,
         available_gpus=available_after_release,
     )
+
+
+def record_releases_schedulable_node(
+    record: JobRecord,
+    schedulable_node_names: set[str],
+    host_cache: dict[str, list[str]],
+) -> bool:
+    """Return true when a running job can free GPUs on a schedulable node."""
+
+    hosts = expand_nodelist(node_expression=record.node_expression, cache=host_cache)
+    if not hosts:
+        return True
+    return any(host in schedulable_node_names for host in hosts)
 
 
 def take_snapshot(horizon_hours: float) -> ForecastSnapshot:

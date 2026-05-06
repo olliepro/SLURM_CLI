@@ -621,6 +621,51 @@ def partition_node_capacities(
     }
 
 
+def schedulable_node_capacities(
+    node_capacities: dict[str, NodeCapacity],
+) -> dict[str, NodeCapacity]:
+    """Select nodes that contribute to schedulable GPU capacity."""
+
+    return {
+        node_name: capacity
+        for node_name, capacity in node_capacities.items()
+        if schedulable_gpu_capacity(capacity=capacity) > 0
+    }
+
+
+def record_targets_schedulable_nodes(
+    record: JobRecord,
+    schedulable_node_names: set[str],
+    host_cache: dict[str, list[str]],
+) -> bool:
+    """Return true when a record should consume schedulable capacity."""
+
+    if record.state != "RUNNING":
+        return True
+    hosts = expand_nodelist(node_expression=record.node_expression, cache=host_cache)
+    if not hosts:
+        return True
+    return any(host in schedulable_node_names for host in hosts)
+
+
+def filter_records_for_schedulable_nodes(
+    records: list[JobRecord],
+    schedulable_node_names: set[str],
+    host_cache: dict[str, list[str]],
+) -> list[JobRecord]:
+    """Filter out running records assigned only to unavailable nodes."""
+
+    return [
+        record
+        for record in records
+        if record_targets_schedulable_nodes(
+            record=record,
+            schedulable_node_names=schedulable_node_names,
+            host_cache=host_cache,
+        )
+    ]
+
+
 def record_targets_partition(
     record: JobRecord,
     partition_name: str,
@@ -679,11 +724,16 @@ def collect_job_windows(
 
     host_cache: dict[str, list[str]] = {}
     records = parse_job_records(raw_jobs=raw_jobs)
-    active_capacities = node_capacities
+    active_capacities = schedulable_node_capacities(
+        node_capacities=node_capacities
+    )
     if target_partition is not None:
-        active_capacities = partition_node_capacities(
+        partition_capacities = partition_node_capacities(
             node_capacities=node_capacities,
             partition_name=target_partition,
+        )
+        active_capacities = schedulable_node_capacities(
+            node_capacities=partition_capacities
         )
         records = filter_records_for_partition(
             records=records,
@@ -691,6 +741,12 @@ def collect_job_windows(
             partition_node_names=set(active_capacities.keys()),
             host_cache=host_cache,
             infer_quad_large_gpu=infer_quad_large_gpu,
+        )
+    else:
+        records = filter_records_for_schedulable_nodes(
+            records=records,
+            schedulable_node_names=set(active_capacities.keys()),
+            host_cache=host_cache,
         )
     windows: list[JobWindow] = []
     degenerate_jobs = 0

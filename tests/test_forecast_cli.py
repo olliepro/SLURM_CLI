@@ -47,6 +47,7 @@ class ForecastCliTests(unittest.TestCase):
         partitions: tuple[str, ...],
         gpu_alloc: int,
         gpus: int = 4,
+        state: str | None = None,
     ) -> NodeCapacity:
         return NodeCapacity(
             node_name=node_name,
@@ -57,7 +58,7 @@ class ForecastCliTests(unittest.TestCase):
             mem_alloc_mib=0,
             gpu_alloc=gpu_alloc,
             partition_names=partitions,
-            state="ALLOCATED" if gpu_alloc else "IDLE",
+            state=state if state is not None else "ALLOCATED" if gpu_alloc else "IDLE",
         )
 
     def test_default_primary_partition_uses_gpu_on_cardinal(self) -> None:
@@ -151,6 +152,54 @@ class ForecastCliTests(unittest.TestCase):
         self.assertEqual(marker.partition_name, "debug")
         self.assertEqual(marker.offset_minutes, 45)
         self.assertEqual(marker.label(), "dbg g1 0h45m")
+
+    def test_debug_marker_ignores_free_gpus_on_drained_nodes(self) -> None:
+        now = datetime(2026, 2, 11, 9, 0, 0)
+        marker = debug_marker_from_records(
+            generated_at=now,
+            partition_name="quad",
+            records=[
+                self._record(
+                    state="RUNNING",
+                    node_expression="quad-drained",
+                    start_time=now - timedelta(minutes=10),
+                    end_time=now + timedelta(minutes=15),
+                    partitions=("quad",),
+                    requested_gpus=4,
+                    allocated_gpus=4,
+                ),
+                self._record(
+                    state="RUNNING",
+                    node_expression="quad-live",
+                    start_time=now - timedelta(minutes=10),
+                    end_time=now + timedelta(minutes=61),
+                    partitions=("quad",),
+                    requested_gpus=4,
+                    allocated_gpus=4,
+                ),
+            ],
+            node_capacities={
+                "quad-drained": self._capacity(
+                    node_name="quad-drained",
+                    partitions=("quad",),
+                    gpu_alloc=0,
+                    gpus=4,
+                    state="IDLE+DRAIN",
+                ),
+                "quad-live": self._capacity(
+                    node_name="quad-live",
+                    partitions=("quad",),
+                    gpu_alloc=4,
+                    gpus=4,
+                    state="ALLOCATED",
+                ),
+            },
+            horizon_hours=8.0,
+        )
+        assert marker is not None
+        self.assertEqual(marker.partition_name, "quad")
+        self.assertEqual(marker.offset_minutes, 61)
+        self.assertEqual(marker.label(), "dbg g1 1h01m")
 
     def test_debug_marker_from_records_survives_beyond_panel_horizon(self) -> None:
         now = datetime(2026, 2, 11, 9, 0, 0)

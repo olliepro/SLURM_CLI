@@ -14,6 +14,7 @@ from slurm_cli.forecast_core import (  # noqa: E402
     parse_partition_names,
     partition_node_capacities,
     record_targets_partition,
+    record_targets_schedulable_nodes,
     total_gpu_capacity,
 )
 
@@ -117,6 +118,22 @@ class ForecastPartitioningTests(unittest.TestCase):
             infer_quad_large_gpu=False,
         )
         self.assertTrue(included)
+
+    def test_running_on_unavailable_hosts_does_not_consume_schedulable_pool(
+        self,
+    ) -> None:
+        record = _record(
+            state="RUNNING",
+            requested_gpus=4,
+            node_expression="node-[1]",
+            partitions=("gpu",),
+        )
+        included = record_targets_schedulable_nodes(
+            record=record,
+            schedulable_node_names={"node002"},
+            host_cache={"node-[1]": ["node001"]},
+        )
+        self.assertFalse(included)
 
     def test_max_colocated_available_gpus_uses_single_node_peak(self) -> None:
         nodes = {
