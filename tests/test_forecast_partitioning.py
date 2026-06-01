@@ -163,7 +163,7 @@ class ForecastPartitioningTests(unittest.TestCase):
             3,
         )
 
-    def test_node_available_gpus_excludes_maintenance_and_drain(self) -> None:
+    def test_node_available_gpus_excludes_unavailable_states(self) -> None:
         maintenance = _capacity(
             node_name="node-a",
             partitions=("gpu",),
@@ -178,11 +178,42 @@ class ForecastPartitioningTests(unittest.TestCase):
             gpu_alloc=0,
             state="IDLE+DRAIN",
         )
+        down = _capacity(
+            node_name="node-c",
+            partitions=("gpu",),
+            gpus=4,
+            gpu_alloc=0,
+            state="DOWN+NOT_RESPONDING",
+        )
         self.assertTrue(is_unavailable_availability_state(state_text=maintenance.state))
+        self.assertTrue(is_unavailable_availability_state(state_text=down.state))
         self.assertEqual(node_available_gpus(capacity=maintenance), 0)
         self.assertEqual(node_available_gpus(capacity=drained), 0)
+        self.assertEqual(node_available_gpus(capacity=down), 0)
 
-    def test_total_gpu_capacity_excludes_maintenance_and_drain(self) -> None:
+    def test_max_colocated_available_gpus_excludes_down_nodes(self) -> None:
+        nodes = {
+            "node-a": _capacity(
+                node_name="node-a",
+                partitions=("quad",),
+                gpus=4,
+                gpu_alloc=1,
+                state="MIXED",
+            ),
+            "node-b": _capacity(
+                node_name="node-b",
+                partitions=("quad",),
+                gpus=4,
+                gpu_alloc=0,
+                state="DOWN+NOT_RESPONDING",
+            ),
+        }
+        self.assertEqual(
+            max_colocated_available_gpus(node_capacities=nodes, partition_name="quad"),
+            3,
+        )
+
+    def test_total_gpu_capacity_excludes_unavailable_states(self) -> None:
         nodes = {
             "node-a": _capacity(node_name="node-a", partitions=("gpu",), gpus=4),
             "node-b": _capacity(
@@ -196,6 +227,12 @@ class ForecastPartitioningTests(unittest.TestCase):
                 partitions=("gpu",),
                 gpus=4,
                 state="IDLE+DRAIN",
+            ),
+            "node-d": _capacity(
+                node_name="node-d",
+                partitions=("gpu",),
+                gpus=4,
+                state="DOWN+NOT_RESPONDING",
             ),
         }
         self.assertEqual(total_gpu_capacity(node_capacities=nodes), 4)

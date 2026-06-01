@@ -30,7 +30,18 @@ ACTIVE_STATES = {"RUNNING", "PENDING"}
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 NONE_VALUES = {"Unknown", "N/A", "None", "(null)", ""}
 HALF_HOUR_MINUTES = 30
-UNAVAILABLE_AVAILABILITY_STATES = {"MAINTENANCE", "DRAIN"}
+UNAVAILABLE_AVAILABILITY_STATES = {
+    "DOWN",
+    "DRAIN",
+    "DRAINING",
+    "FAIL",
+    "FAILING",
+    "MAINT",
+    "MAINTENANCE",
+    "NO_RESPOND",
+    "NOT_RESPONDING",
+    "RESERVED",
+}
 
 
 @dataclass(frozen=True)
@@ -879,7 +890,7 @@ def is_unavailable_availability_state(state_text: str) -> bool:
     - `state_text`: raw Slurm node state string.
 
     Outputs:
-    - Boolean flag indicating maintenance or drain state.
+    - Boolean flag indicating a state that Slurm should not treat as allocatable.
 
     Example:
         >>> is_unavailable_availability_state(state_text="IDLE+MAINTENANCE+RESERVED")
