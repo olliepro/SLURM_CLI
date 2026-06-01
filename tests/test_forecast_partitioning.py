@@ -49,6 +49,8 @@ def _capacity(
     partitions: tuple[str, ...],
     gpus: int = 4,
     gpu_alloc: int = 0,
+    cpu_alloc: int = 0,
+    mem_alloc_mib: int = 0,
     state: str = "IDLE",
 ) -> NodeCapacity:
     return NodeCapacity(
@@ -56,8 +58,8 @@ def _capacity(
         cpu=64,
         mem_mib=512000,
         gpus=gpus,
-        cpu_alloc=0,
-        mem_alloc_mib=0,
+        cpu_alloc=cpu_alloc,
+        mem_alloc_mib=mem_alloc_mib,
         gpu_alloc=gpu_alloc,
         partition_names=partitions,
         state=state,
@@ -190,6 +192,46 @@ class ForecastPartitioningTests(unittest.TestCase):
         self.assertEqual(node_available_gpus(capacity=maintenance), 0)
         self.assertEqual(node_available_gpus(capacity=drained), 0)
         self.assertEqual(node_available_gpus(capacity=down), 0)
+
+    def test_node_available_gpus_excludes_cpu_and_memory_full_nodes(self) -> None:
+        cpu_full = _capacity(
+            node_name="node-a",
+            partitions=("gpu",),
+            gpus=4,
+            gpu_alloc=1,
+            cpu_alloc=64,
+            state="ALLOCATED",
+        )
+        mem_full = _capacity(
+            node_name="node-b",
+            partitions=("gpu",),
+            gpus=4,
+            gpu_alloc=1,
+            mem_alloc_mib=int(512000 * 0.98),
+            state="MIXED",
+        )
+        self.assertEqual(node_available_gpus(capacity=cpu_full), 0)
+        self.assertEqual(node_available_gpus(capacity=mem_full), 0)
+
+    def test_max_colocated_available_gpus_excludes_cpu_full_nodes(self) -> None:
+        nodes = {
+            "node-a": _capacity(
+                node_name="node-a",
+                partitions=("gpu",),
+                gpus=4,
+                gpu_alloc=1,
+                cpu_alloc=64,
+                state="ALLOCATED",
+            ),
+            "node-b": _capacity(
+                node_name="node-b",
+                partitions=("gpu",),
+                gpus=4,
+                gpu_alloc=4,
+                state="ALLOCATED",
+            ),
+        }
+        self.assertEqual(max_colocated_available_gpus(node_capacities=nodes), 0)
 
     def test_max_colocated_available_gpus_excludes_down_nodes(self) -> None:
         nodes = {

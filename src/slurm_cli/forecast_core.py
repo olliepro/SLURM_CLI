@@ -30,6 +30,7 @@ ACTIVE_STATES = {"RUNNING", "PENDING"}
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 NONE_VALUES = {"Unknown", "N/A", "None", "(null)", ""}
 HALF_HOUR_MINUTES = 30
+MEM_FULL_FRACTION = 0.98
 UNAVAILABLE_AVAILABILITY_STATES = {
     "DOWN",
     "DRAIN",
@@ -496,7 +497,7 @@ def is_full_node_by_resources(
     for capacity in capacities:
         if cpu_per_node >= capacity.cpu:
             return True
-        if mem_per_node >= capacity.mem_mib * 0.98:
+        if mem_per_node >= capacity.mem_mib * MEM_FULL_FRACTION:
             return True
     return False
 
@@ -577,9 +578,7 @@ def degenerate_node_lock_windows(
     for node_name, jobs in mapping.items():
         capacity = node_capacities[node_name]
         free_gpus = capacity.gpus - capacity.gpu_alloc
-        is_cpu_full = capacity.cpu_alloc >= capacity.cpu
-        is_mem_full = capacity.mem_alloc_mib >= int(capacity.mem_mib * 0.98)
-        if free_gpus <= 0 or not (is_cpu_full or is_mem_full):
+        if free_gpus <= 0 or not node_lacks_schedulable_cpu_mem(capacity=capacity):
             continue
         if len({job_id for job_id, _ in jobs}) < 2:
             continue
@@ -909,10 +908,20 @@ def schedulable_gpu_capacity(capacity: NodeCapacity) -> int:
     return capacity.gpus
 
 
+def node_lacks_schedulable_cpu_mem(capacity: NodeCapacity) -> bool:
+    """Return true when current CPU or memory allocations block new jobs."""
+
+    return capacity.cpu_alloc >= capacity.cpu or capacity.mem_alloc_mib >= int(
+        capacity.mem_mib * MEM_FULL_FRACTION
+    )
+
+
 def node_available_gpus(capacity: NodeCapacity) -> int:
-    """Return non-negative currently available GPUs for one node."""
+    """Return non-negative GPUs currently schedulable on one node."""
 
     if is_unavailable_availability_state(state_text=capacity.state):
+        return 0
+    if node_lacks_schedulable_cpu_mem(capacity=capacity):
         return 0
     return max(capacity.gpus - capacity.gpu_alloc, 0)
 
