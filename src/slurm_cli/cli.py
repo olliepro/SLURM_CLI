@@ -17,6 +17,7 @@ from slurm_cli.remote_access import (
     RemoteOpenRequest,
     open_remote_target,
 )
+from slurm_cli.agent_query import parse_query_args, run_query_command
 
 
 def build_gpu_parser() -> argparse.ArgumentParser:
@@ -38,7 +39,7 @@ def build_gpu_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("launch", "search", "dash", "remote"),
+        choices=("launch", "search", "dash", "remote", "query"),
         help="Subcommand to run. Defaults to launch when omitted.",
     )
     return parser
@@ -109,6 +110,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _run_dash(argv=raw_args[1:])
     if command == "remote":
         return _run_remote(argv=raw_args[1:])
+    if command == "query":
+        return _run_query(argv=raw_args[1:])
     if command.startswith("-"):
         return _run_launch(argv=raw_args)
     build_gpu_parser().error(f"unknown command: {command}")
@@ -131,6 +134,11 @@ def _run_dash(argv: Sequence[str]) -> int:
     args = parse_dash_args(argv=argv)
     run_dash_command(args=args)
     return 0
+
+
+def _run_query(argv: Sequence[str]) -> int:
+    args = parse_query_args(argv=argv)
+    return run_query_command(args=args)
 
 
 def _run_remote(argv: Sequence[str]) -> int:

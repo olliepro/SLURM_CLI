@@ -2,7 +2,8 @@
 
 ## High-Level Modules
 
-- `cli.py`: `gpu` command router (`launch/search/dash/remote`).
+- `cli.py`: `gpu` command router (`launch/search/dash/remote/query`).
+- `agent_query.py`: non-interactive JSON surface for agents/scripts (`gpu query`); reuses `forecast_core`/`partition_policy`/`dash_logic` builders with no curses.
 - `interactive_slurm.py`: launch/search/dash resource resolution and execution flows.
 - `launch_flow.py`: shared launch workflow used by both `gpu launch` and dashboard-triggered launches.
 - `dash_ui.py`: curses dashboard rendering and key handling.
@@ -37,6 +38,14 @@
    - join via `remote_access.open_remote_target`
    - relocate to another OSC login cluster via `remote_access.open_remote_target`
    - relaunch a dashboard-specific batch-submit workflow via the shared launch-flow module
+
+### `gpu query`
+
+1. parse subcommand + request shape (`--gpus/--cpus/--time/--mem`)
+2. fetch raw Slurm state once (`scontrol show jobs/nodes -o`) when needed
+3. reuse `partition_policy.recommend_partition` (debug-aware routing) and
+   `forecast_core` window/step-series builders to compute outputs
+4. print one JSON object (`schema_version`-tagged) to stdout; no prompts/curses
 
 ### `gpu remote`
 

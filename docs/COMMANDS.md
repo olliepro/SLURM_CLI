@@ -64,3 +64,36 @@ gpu remote c0318 --path ./project
 gpu remote cardinal --editor antigravity
 gpu remote ascend --dry-run
 ```
+
+## `gpu query`
+
+Non-interactive, read-only JSON surface for agents/scripts. No curses, no
+prompts, no side effects; every subcommand prints one JSON object to stdout.
+Output carries `schema_version` for forward compatibility.
+
+Subcommands:
+
+- `plan`: answers "where should I schedule this and when can it start?" —
+  returns the recommended partition (debug-aware), whether the request
+  `qualifies_for_debug`, `advice` on how to reach the high-priority debug queue,
+  and one `options` entry per candidate partition with a capacity-forecast
+  `start_estimate`.
+- `recommend`: partition routing + debug eligibility only (no Slurm fetch when
+  `--cluster` is given).
+- `forecast`: availability time-series and `earliest_free` for one partition.
+- `avail`: current free GPUs (and `max_colocated_available`) per GPU partition.
+- `jobs`: your pending/running jobs with start ETAs.
+
+Start estimates are **capacity-based, not priority-aware** — see the `caveats`
+field in the output. They reflect when GPUs free up, not Slurm's
+priority/backfill ordering.
+
+Examples:
+
+```bash
+gpu query plan --gpus 1 --time 00:30:00 --cpus 4 --mem 32G
+gpu query recommend --gpus 4 --time 02:00:00 --cluster cardinal
+gpu query forecast --partition gpu --gpus 2 --horizon-hours 8
+gpu query avail
+gpu query jobs --user your_user
+```
