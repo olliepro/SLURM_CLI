@@ -533,7 +533,7 @@ class DashBoard:
     def _draw(self, stdscr: "curses.window") -> None:
         """Render one full curses dashboard frame."""
 
-        stdscr.clear()
+        stdscr.erase()
         height, width = stdscr.getmaxyx()
         lower_panel_top = forecast_panel_top(screen_height=height)
         blame_width = 65
