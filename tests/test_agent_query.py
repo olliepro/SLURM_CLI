@@ -41,6 +41,13 @@ def _cardinal_capacities() -> dict[str, NodeCapacity]:
     }
 
 
+def _fragmented_quad_capacities() -> dict[str, NodeCapacity]:
+    return {
+        "a0001": _capacity("a0001", ("quad",), gpus=4, gpu_alloc=2),
+        "a0002": _capacity("a0002", ("quad",), gpus=4, gpu_alloc=2),
+    }
+
+
 class RecommendTests(unittest.TestCase):
     def test_short_single_gpu_routes_to_debug(self) -> None:
         payload = agent_query.build_recommend(
@@ -105,6 +112,24 @@ class PlanTests(unittest.TestCase):
         self.assertTrue(payload["caveats"])
         self.assertTrue(any("priority" in c for c in payload["caveats"]))
 
+    def test_plan_rejects_immediate_start_when_gpus_are_fragmented(self) -> None:
+        payload = agent_query.build_plan(
+            raw_jobs="",
+            node_capacities=_fragmented_quad_capacities(),
+            now=NOW,
+            gpus=4,
+            cpus=48,
+            time_minutes=24 * 60,
+            mem_str="256G",
+            cluster_name="ascend",
+        )
+        option = payload["options"][0]
+        self.assertEqual(option["partition"], "quad")
+        self.assertEqual(option["max_colocated_available"], 2)
+        self.assertFalse(option["start_estimate"]["available_now"])
+        self.assertIsNone(option["start_estimate"]["earliest_start_at"])
+        self.assertIn("no single node", option["start_estimate"]["note"])
+
 
 class ForecastAvailTests(unittest.TestCase):
     def test_forecast_reports_immediate_availability_when_idle(self) -> None:
@@ -119,6 +144,18 @@ class ForecastAvailTests(unittest.TestCase):
         self.assertEqual(payload["available_now"], 8)
         self.assertEqual(payload["earliest_free"]["in_hours"], 0.0)
         self.assertTrue(payload["series"])
+
+    def test_forecast_rejects_immediate_start_when_gpus_are_fragmented(self) -> None:
+        payload = agent_query.build_forecast(
+            raw_jobs="",
+            node_capacities=_fragmented_quad_capacities(),
+            now=NOW,
+            partition="quad",
+            want_gpus=4,
+        )
+        self.assertEqual(payload["max_colocated_available"], 2)
+        self.assertIsNone(payload["earliest_free"]["at"])
+        self.assertIn("no single node", payload["earliest_free"]["note"])
 
     def test_avail_lists_each_gpu_partition(self) -> None:
         payload = agent_query.build_avail(

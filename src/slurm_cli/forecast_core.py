@@ -20,6 +20,7 @@ Example:
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections import defaultdict
@@ -137,16 +138,13 @@ class ForecastStats:
 
 
 def run_command(command: list[str]) -> str:
-    """Run a command and return stdout.
+    """Run a Slurm command and return unabridged stdout."""
 
-    Inputs:
-    - `command`: argument-vector command.
-
-    Outputs:
-    - Command stdout text.
-    """
-
-    result = subprocess.run(args=command, capture_output=True, text=True, check=False)
+    env = os.environ.copy()
+    env["SLURM_BITSTR_LEN"] = "0"
+    result = subprocess.run(
+        args=command, env=env, capture_output=True, text=True, check=False
+    )
     assert result.returncode == 0, result.stderr.strip()
     return result.stdout
 
@@ -734,9 +732,7 @@ def collect_job_windows(
 
     host_cache: dict[str, list[str]] = {}
     records = parse_job_records(raw_jobs=raw_jobs)
-    active_capacities = schedulable_node_capacities(
-        node_capacities=node_capacities
-    )
+    active_capacities = schedulable_node_capacities(node_capacities=node_capacities)
     if target_partition is not None:
         partition_capacities = partition_node_capacities(
             node_capacities=node_capacities,

@@ -82,9 +82,11 @@ class PartitionPlan:
 
     partition: str
     is_debug: bool
+    request_gpus: int
     capacity_gpus: int
     available_now: int
     max_colocated_available: int
+    colocation_blocked_now: bool
     available_immediately: bool
     earliest_start_at: datetime | None
 
@@ -95,7 +97,16 @@ class PartitionPlan:
             "available_now": self.available_immediately,
             "basis": "capacity_forecast",
         }
-        if self.earliest_start_at is None:
+        if self.colocation_blocked_now:
+            start["earliest_start_at"] = None
+            start["in_hours"] = None
+            start["note"] = (
+                f"Partition has {self.available_now} free GPUs now, but no single "
+                f"node has {self.request_gpus} free GPUs "
+                f"(max_colocated_available={self.max_colocated_available}). "
+                "Use sbatch --test-only for node-level placement timing."
+            )
+        elif self.earliest_start_at is None:
             start["earliest_start_at"] = None
             start["in_hours"] = None
             start["note"] = (
@@ -245,6 +256,14 @@ def _earliest_at_least(
     return None
 
 
+def _colocation_blocked_now(
+    earliest: datetime | None, now: datetime, max_colocated: int, want_gpus: int
+) -> bool:
+    """Return true when aggregate capacity is free now but no one node fits."""
+
+    return earliest is not None and earliest <= now and max_colocated < want_gpus
+
+
 def _partition_plan(
     raw_jobs: str,
     now: datetime,
@@ -266,15 +285,26 @@ def _partition_plan(
     earliest = _earliest_at_least(
         times=times, available=available, want_gpus=want_gpus
     )
+    max_colocated = max_colocated_available_gpus(
+        node_capacities=node_capacities, partition_name=partition
+    )
+    colocation_blocked_now = _colocation_blocked_now(
+        earliest=earliest,
+        now=now,
+        max_colocated=max_colocated,
+        want_gpus=want_gpus,
+    )
     return PartitionPlan(
         partition=partition,
         is_debug=_is_debug_partition(partition),
+        request_gpus=want_gpus,
         capacity_gpus=capacity,
         available_now=available_now,
-        max_colocated_available=max_colocated_available_gpus(
-            node_capacities=node_capacities, partition_name=partition
+        max_colocated_available=max_colocated,
+        colocation_blocked_now=colocation_blocked_now,
+        available_immediately=(
+            earliest is not None and earliest <= now and not colocation_blocked_now
         ),
-        available_immediately=earliest is not None and earliest <= now,
         earliest_start_at=earliest,
     )
 
@@ -388,12 +418,33 @@ def build_forecast(
     earliest = _earliest_at_least(
         times=times, available=available, want_gpus=want_gpus
     )
+    max_colocated = max_colocated_available_gpus(
+        node_capacities=node_capacities, partition_name=partition
+    )
+    colocation_blocked_now = _colocation_blocked_now(
+        earliest=earliest,
+        now=now,
+        max_colocated=max_colocated,
+        want_gpus=want_gpus,
+    )
     series = [
         {"at": series_time.isoformat(), "free_gpus": free}
         for series_time, free in zip(times, available)
     ]
     earliest_free: dict[str, Any]
-    if earliest is None:
+    if colocation_blocked_now:
+        earliest_free = {
+            "gpus": want_gpus,
+            "at": None,
+            "in_hours": None,
+            "note": (
+                f"Partition has {available[0] if available else 0} free GPUs now, "
+                f"but no single node has {want_gpus} free GPUs "
+                f"(max_colocated_available={max_colocated}). Use sbatch --test-only "
+                "for node-level placement timing."
+            ),
+        }
+    elif earliest is None:
         earliest_free = {"gpus": want_gpus, "at": None, "in_hours": None}
     else:
         earliest_free = {
@@ -410,9 +461,7 @@ def build_forecast(
         "is_debug": _is_debug_partition(partition),
         "capacity_gpus": capacity,
         "available_now": available[0] if available else 0,
-        "max_colocated_available": max_colocated_available_gpus(
-            node_capacities=node_capacities, partition_name=partition
-        ),
+        "max_colocated_available": max_colocated,
         "horizon_hours": horizon_hours,
         "earliest_free": earliest_free,
         "series": series,

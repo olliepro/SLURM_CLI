@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from slurm_cli.forecast_core import (  # noqa: E402
     JobRecord,
@@ -15,6 +17,7 @@ from slurm_cli.forecast_core import (  # noqa: E402
     partition_node_capacities,
     record_targets_partition,
     record_targets_schedulable_nodes,
+    run_command,
     total_gpu_capacity,
 )
 
@@ -72,6 +75,31 @@ class ForecastPartitioningTests(unittest.TestCase):
         self.assertEqual(parse_array_task_count(array_task_text="0-1"), 2)
         self.assertEqual(parse_array_task_count(array_task_text="0-15:4%2"), 4)
         self.assertEqual(parse_array_task_count(array_task_text="1,3,7-9"), 5)
+        self.assertEqual(
+            parse_array_task_count(
+                array_task_text=(
+                    "0,19,38-57,61,76,95,114,119,133-152,157,171,175,181,"
+                    "187,190,209,228-247,253,266,285,289-291,301-302,"
+                    "304-342,346-348,352,354,358,360-379%20"
+                )
+            ),
+            147,
+        )
+
+    def test_run_command_requests_unabridged_slurm_bitstrings(self) -> None:
+        with patch("slurm_cli.forecast_core.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(
+                returncode=0,
+                stdout="ok",
+                stderr="",
+            )
+
+            self.assertEqual(
+                run_command(command=["scontrol", "show", "jobs", "-o"]), "ok"
+            )
+
+        call_kwargs = mock_run.call_args.kwargs
+        self.assertEqual(call_kwargs["env"]["SLURM_BITSTR_LEN"], "0")
 
     def test_parse_partition_names_normalizes_star_and_case(self) -> None:
         self.assertEqual(parse_partition_names(value="GPU*,Quad"), ("gpu", "quad"))
